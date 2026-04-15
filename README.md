@@ -33,7 +33,7 @@ IsoScope was developed to enable systematic exploration of transcript isoform va
 - **Drug response:** GDSC1 (378 drugs) and GDSC2 (286 drugs) via [Cell Model Passports](https://cellmodelpassports.sanger.ac.uk/downloads)
 - **Annotations:** GENCODE v49 (biotype, exons, length, per-exon coordinates), Ensembl BioMart release 115 (UniProt, Pfam, InterPro)
 - **External dataset:** 6 glioblastoma patient samples from [GSE162643](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE162643) (pre/post G207 oncolytic HSV treatment)
-- **Large Dataset:** Data used in running the app locally that are too large for github can be found [here] (https://zenodo.org/records/19475049)
+- **Large Dataset:** Data used in running the app locally that are too large for github can be found [here](https://zenodo.org/records/19475049)
 
 ## Running locally
 
