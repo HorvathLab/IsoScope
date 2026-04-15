@@ -47,8 +47,8 @@ Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV
 ## Data
 
 - **CCLE RNA-seq:** 667 cell lines, 26 tissues (BioProject [PRJNA523380](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA523380))
-- **Alignment:** STAR 2.7.11b, GRCh38, GENCODE v49 basic annotation
-- **Quantification:** Salmon 1.10.3 (alignment-based mode)
+- **Alignment:** STAR 2.7.2a, GRCh38, GENCODE v49 basic annotation
+- **Quantification:** Salmon 1.10.0 (alignment-based mode)
 - **Drug response:** GDSC1 (378 drugs) and GDSC2 (286 drugs) via [Cell Model Passports](https://cellmodelpassports.sanger.ac.uk/downloads)
 - **Annotations:** GENCODE v49 (biotype, exons, length, per-exon coordinates), Ensembl BioMart release 115 (UniProt, Pfam, InterPro)
 - **External dataset:** 6 glioblastoma patient samples from [GSE162643](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE162643) (pre/post G207 oncolytic HSV treatment)
