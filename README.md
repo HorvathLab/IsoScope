@@ -2,13 +2,32 @@
 
 *Interactive visualization of transcript isoform expression across cancer cell lines*
 
-**Live application:** <https://azkasajjad-isoscope.hf.space> ( we need to change this)
+**Live application:** <https://horvathlab-isoscope.hf.space/>
 
 ## Overview
 
 Most genes produce multiple isoforms, and which one is expressed can matter as much as how much. A textbook example is BCL2L1, where alternative splicing produces BCL-XL, which protects cells from apoptosis, and BCL-XS, which promotes it (Dou et al., 2021). Same gene, opposite roles in cell survival, depending on a single splicing decision. Cancer cells routinely exploit this kind of switch to evade therapy, sustain growth, and adapt to new tissue environments. Despite this, most cancer transcriptomics resources still report a single expression value per gene, collapsing the very signal that distinguishes one isoform from another.
 
-IsoScope was developed to enable systematic exploration of transcript isoform variation. It is an R/Shiny application for interactive exploration of isoform-level expression across **667 cancer cell lines from the Cancer Cell Line Encyclopedia (CCLE)**, covering **26 tissue types**, with optional overlay of **6 glioblastoma patient samples** (28 tissue groups, 674 samples total) in GBM mode. The application links isoform expression to drug sensitivity from GDSC1 and GDSC2, detects isoform switching between tissues, quantifies per-gene isoform diversity, visualizes exon-level structural differences across isoforms, and supports overlay of external datasets for translational context. All analyses are accessible through a point-and-click interface without writing code.
+IsoScope was developed to enable systematic exploration of transcript isoform variation. It is an R/Shiny application for interactive exploration of isoform-level expression across **667 cancer cell lines from the Cancer Cell Line Encyclopedia (CCLE)**, covering **26 tissue types**, with optional overlay of **6 glioblastoma patient samples** (28 tissue groups, 673 samples total) in GBM mode. The application links isoform expression to drug sensitivity from GDSC1 and GDSC2, detects isoform switching between tissues, quantifies per-gene isoform diversity, visualizes exon-level structural differences across isoforms, and supports overlay of external datasets for translational context. All analyses are accessible through a point-and-click interface without writing code.
+
+## Use Cases
+
+Here we present use cases as worked examples to answer three biologically important questions. In the first two cases, the analysis reflects differential isoform usage even when overall gene expression is very similar. In glioblastoma, the key signal is that after therapy, dominant isoforms switch, revealing transcript-level remodeling that gene-level summaries alone would miss.
+
+### Q1. Which isoform dominates in each tissue?
+![RBP1 dominant isoforms in stomach vs pancreas](images/RBP1_stomach_vs_pancreas.png)
+
+RBP1 shows similar total expression in pancreas and stomach cancer lines (~104 vs ~106 TPM), but uses different dominant transcripts. Pancreas is dominated by ENST00000672186.1 (73%), whereas stomach is dominated by ENST00000619087.5 (72%). Both are protein-coding and share the same Pfam domain, but differ in transcript structure and coding sequence length. Gene-level summaries would make these samples look nearly identical, while transcript-level analysis reveals a clear tissue-linked isoform switch.
+
+### Q2. How does isoform usage vary with drug response?
+![PARP1 isoform composition and olaparib response in TNBC](images/PARP1_olaparib_TNBC.png)
+
+Two TNBC lines with similar total PARP1 expression show markedly different olaparib sensitivity. HCC1143 (resistant, ln IC50 5.20) is almost entirely committed to canonical PARP1 ENST00000366794.10 (98%). In contrast, HCC1187 (sensitive, ln IC50 2.12) maintains a mixed isoform pool, with ENST00000874609.1 (35%) and ENST00000922080.1 (30%) exceeding the canonical transcript (27%). This contrast is also reflected in isoform diversity, with normalized Shannon entropy of 0.10 in HCC1143 versus 0.71 in HCC1187. Gene-level PARP1 expression alone would not explain this difference, but isoform-level analysis reveals a transcript-organization pattern associated with drug response.
+
+### Q3. How does therapy reshape the transcriptome at isoform resolution?
+![GBM pre vs post G207 oncolytic virus therapy](images/GBM_pre_vs_post_G207.png)
+
+Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV therapy (GSE162643) show widespread transcript-level remodeling after treatment. Differential transcript analysis identifies thousands of altered isoforms, and KEGG enrichment shows a shift from inflammatory and immune-associated programs in PRE samples toward oxidative phosphorylation, proteasome, and neurodegeneration-associated programs in POST samples. In addition, interferon-stimulated genes including IFIT1, IFI6, and STAT1 switch their dominant transcript after therapy. Together, these results show that treatment reshapes not only pathway activity, but also isoform choice within individual genes.
 
 ## Features
 
@@ -37,7 +56,7 @@ IsoScope was developed to enable systematic exploration of transcript isoform va
 
 ## Running locally
 
-The simplest way to use IsoScope is the [live Hugging Face Space](https://azkasajjad-isoform-explorer.hf.space). To run a local copy:
+The simplest way to use IsoScope is the [live Hugging Face Space](https://horvathlab-isoscope.hf.space/). To run a local copy:
 
 **Prerequisites:**
 
@@ -50,13 +69,13 @@ git clone https://github.com/HorvathLab/IsoScope.git
 cd IsoScope
 ```
 
-Place the following data files in `shiny_data/`: ( is this where zenodo link goes?)
+Data files are available at Zenodo: <https://zenodo.org/records/19475049>. Download and place the following files in `shiny_data/`:
 
 | File | Description |
 |------|-------------|
 | `quants.db` | Transcript TPM matrix (SQLite, 827 MB) |
 | `deseq2.db` | Precomputed DESeq2 results (SQLite, distributed as `.zip`) |
-| `sample_metadata.csv` | Sample-to-tissue mapping (674 rows) |
+| `sample_metadata.csv` | Sample-to-tissue mapping (673 rows) |
 | `tissue_avg.csv` | Tissue-averaged expression |
 | `dominant_isoforms.csv` | Dominant isoform per gene per tissue with bootstrap CIs |
 | `diversity_range.csv` | Per-gene entropy range across tissues |
@@ -120,7 +139,6 @@ Azka Sajjad, Siera Martinez, Luke Johnson, Vania Ballesteros Prieto, Hovhannes A
 
 Released under the MIT License. See `LICENSE` for full text.
 
-
 ## References
 
 1. Dou Z, Zhao D, Chen X, Xu C, Jin X, Zhang X, Wang Y, Xie X, Li Q, Di C, Zhang H. *Aberrant Bcl-x splicing in cancer: from molecular mechanism to therapeutic modulation.* Journal of Experimental & Clinical Cancer Research, 40, 194, 2021. doi:10.1186/s13046-021-02001-w
@@ -129,11 +147,13 @@ Released under the MIT License. See `LICENSE` for full text.
 4. Markert JM, et al. *Phase Ib trial of mutant herpes simplex virus G207 inoculated pre- and post-tumor resection for recurrent GBM.* Molecular Therapy, 17, 199–207, 2009.
 5. Dobin A, Davis CA, Schlesinger F, Drenkow J, Zaleski C, Jha S, Batut P, Chaisson M, Gingeras TR. *STAR: ultrafast universal RNA-seq aligner.* Bioinformatics, 29(1), 15–21, 2013. doi:10.1093/bioinformatics/bts635
 6. Patro R, Duggal G, Love MI, Irizarry RA, Kingsford C. *Salmon provides fast and bias-aware quantification of transcript expression.* Nature Methods, 14(4), 417–419, 2017. doi:10.1038/nmeth.4197
-7. Love MI, Huber W, Anders S. *Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.* Genome Biology, 15, 550, 2014.
-8. Martin FJ, et al. *Ensembl 2023.* Nucleic Acids Research, 51, D933–D941, 2023.
-9. The UniProt Consortium. *UniProt: the Universal Protein Knowledgebase in 2023.* Nucleic Acids Research, 51, D523–D531, 2023.
-10. Mistry J, et al. *Pfam: The protein families database in 2021.* Nucleic Acids Research, 49, D412–D419, 2021.
-11. Paysan-Lafosse T, et al. *InterPro in 2022.* Nucleic Acids Research, 51, D418–D427, 2023.
+7. Soneson C, Love MI, Robinson MD. *Differential analyses for RNA-seq: transcript-level estimates improve gene-level inferences.* F1000Research, 4, 1521, 2016. doi:10.12688/f1000research.7563.2
+8. Love MI, Huber W, Anders S. *Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.* Genome Biology, 15, 550, 2014.
+9. Wu T, Hu E, Xu S, Chen M, Guo P, Dai Z, Feng T, Zhou L, Tang W, Zhan L, Fu X, Liu S, Bo X, Yu G. *clusterProfiler 4.0: A universal enrichment tool for interpreting omics data.* The Innovation, 2(3), 100141, 2021. doi:10.1016/j.xinn.2021.100141
+10. Martin FJ, et al. *Ensembl 2023.* Nucleic Acids Research, 51, D933–D941, 2023.
+11. The UniProt Consortium. *UniProt: the Universal Protein Knowledgebase in 2023.* Nucleic Acids Research, 51, D523–D531, 2023.
+12. Mistry J, et al. *Pfam: The protein families database in 2021.* Nucleic Acids Research, 49, D412–D419, 2021.
+13. Paysan-Lafosse T, et al. *InterPro in 2022.* Nucleic Acids Research, 51, D418–D427, 2023.
 
 ## Contact
 
