@@ -25,7 +25,7 @@ RBP1 shows similar total expression in pancreas and stomach cancer lines (~104 v
 Two TNBC lines with similar total PARP1 expression show markedly different olaparib sensitivity. HCC1143 (resistant, ln IC50 5.20) is almost entirely committed to canonical PARP1 ENST00000366794.10 (98%). In contrast, HCC1187 (sensitive, ln IC50 2.12) maintains a mixed isoform pool, with ENST00000874609.1 (35%) and ENST00000922080.1 (30%) exceeding the canonical transcript (27%). This contrast is also reflected in isoform diversity, with normalized Shannon entropy of 0.10 in HCC1143 versus 0.71 in HCC1187. Gene-level PARP1 expression alone would not explain this difference, but isoform-level analysis reveals a transcript-organization pattern associated with drug response.
 
 ### Q3. How does therapy reshape the transcriptome at isoform resolution?
-![GBM pre vs post G207 oncolytic virus therapy](images/GBM_pre_vs_post_G207.png)
+![GBM pre vs post G207 oncolytic virus therapy](images/GBM_pre_vs_post_treatment.png)
 
 Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV therapy (GSE162643) show widespread transcript-level remodeling after treatment. Differential transcript analysis identifies thousands of altered isoforms, and KEGG enrichment shows a shift from inflammatory and immune-associated programs in PRE samples toward oxidative phosphorylation, proteasome, and neurodegeneration-associated programs in POST samples. In addition, interferon-stimulated genes including IFIT1, IFI6, and STAT1 switch their dominant transcript after therapy. Together, these results show that treatment reshapes not only pathway activity, but also isoform choice within individual genes.
 
