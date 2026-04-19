@@ -75,5 +75,5 @@ for i, qf in enumerate(quant_files):
 
 tpm_mat = pd.DataFrame(tpms)
 tpm_mat.index.name = "ENST"
-tpm_mat.to_csv(f"{outdir}/all_quants_all_ENST.csv")
+tpm_mat.reset_index().to_csv(f"{outdir}/all_quants_all_ENST.csv")
 print(f"TPM: {tpm_mat.shape[0]} transcripts x {tpm_mat.shape[1]} samples")
