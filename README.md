@@ -98,6 +98,7 @@ Cloning the repository brings the smaller reference files in `data/` with it. Th
 | `deseq2.db-001.zip` | 3.7 GB | Precomputed DESeq2 results (unzip to `deseq2.db`) |
 | `dominant_isoforms.csv` | 112 MB | Dominant isoform per gene per tissue with bootstrap CIs |
 | `tpm_matrix.txt.gz` | 116 MB | Gene-level TPM from STAR (for gene-level clustering) |
+| `all_quants_all_ENST.csv` | ~1 GB | Transcript TPM matrix (CSV, used as input for the integration workflow) |
 
 Copy the contents of `data/` into `shiny_data/` (or symlink it), then place the Zenodo downloads in the same folder. Unzip `deseq2.db-001.zip` to produce `deseq2.db`.
 
