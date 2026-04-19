@@ -2,13 +2,17 @@
 
 *Interactive visualization of transcript isoform expression across cancer cell lines*
 
-**Live application:** <https://horvathlab-isoscope.hf.space/>
+**Live application:** <https://huggingface.co/spaces/HorvathLab/IsoScope>
+
+**Source code:** <https://github.com/HorvathLab/IsoScope>
+
+**Data:** <https://zenodo.org/records/19475049>
 
 ## Overview
 
-Most genes produce multiple isoforms, and which one is expressed can matter as much as how much. A textbook example is BCL2L1, where alternative splicing produces BCL-XL, which protects cells from apoptosis, and BCL-XS, which promotes it (Dou et al., 2021). Same gene, opposite roles in cell survival, depending on a single splicing decision. Cancer cells routinely exploit this kind of switch to evade therapy, sustain growth, and adapt to new tissue environments. Despite this, most cancer transcriptomics resources still report a single expression value per gene, collapsing the very signal that distinguishes one isoform from another.
+Alternative splicing can produce structurally and functionally distinct isoforms from the same gene, introducing variation that is not captured by gene-level expression summaries. A textbook example is BCL2L1, where alternative splicing produces BCL-XL, which protects cells from apoptosis, and BCL-XS, which promotes it (Dou et al., 2021). Same gene, opposite roles in cell survival, depending on a single splicing decision. Cancer cells routinely exploit this kind of switch to evade therapy, sustain growth, and adapt to new tissue environments. Despite this, most cancer transcriptomics resources still report a single expression value per gene, collapsing the very signal that distinguishes one isoform from another.
 
-IsoScope was developed to enable systematic exploration of transcript isoform variation. It is an R/Shiny application for interactive exploration of isoform-level expression across **667 cancer cell lines from the Cancer Cell Line Encyclopedia (CCLE)**, covering **26 tissue types**, with optional overlay of **6 glioblastoma patient samples** (28 tissue groups, 673 samples total) in GBM mode. The application links isoform expression to drug sensitivity from GDSC1 and GDSC2, detects isoform switching between tissues, quantifies per-gene isoform diversity, visualizes exon-level structural differences across isoforms, and supports overlay of external datasets for translational context. All analyses are accessible through a point-and-click interface without writing code.
+IsoScope is an R/Shiny application for interactive exploration of isoform-level expression across **667 cancer cell lines from the Cancer Cell Line Encyclopedia (CCLE)**, covering **26 tissue types**, with optional overlay of **6 glioblastoma patient samples** (28 tissue groups, 673 samples total). The application links isoform expression to drug sensitivity from GDSC1 and GDSC2, detects isoform switching between tissues, quantifies per-gene isoform diversity, visualizes exon-level structural differences across isoforms, and supports overlay of external datasets for translational context. All analyses are accessible through a point-and-click interface without writing code.
 
 ## Use Cases
 
@@ -25,7 +29,7 @@ RBP1 shows similar total expression in pancreas and stomach cancer lines (~104 v
 Two TNBC lines with similar total PARP1 expression show markedly different olaparib sensitivity. HCC1143 (resistant, ln IC50 5.20) is almost entirely committed to canonical PARP1 ENST00000366794.10 (98%). In contrast, HCC1187 (sensitive, ln IC50 2.12) maintains a mixed isoform pool, with ENST00000874609.1 (35%) and ENST00000922080.1 (30%) exceeding the canonical transcript (27%). This contrast is also reflected in isoform diversity, with normalized Shannon entropy of 0.10 in HCC1143 versus 0.71 in HCC1187. Gene-level PARP1 expression alone would not explain this difference, but isoform-level analysis reveals a transcript-organization pattern associated with drug response.
 
 ### Q3. How does therapy reshape the transcriptome at isoform resolution?
-![GBM pre vs post G207 oncolytic virus therapy](images/GBM_pre_vs_post_treatment.png)
+![GBM pre vs post G207 oncolytic virus therapy](images/GBM_pre_vs_post_G207.png)
 
 Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV therapy (GSE162643) show widespread transcript-level remodeling after treatment. Differential transcript analysis identifies thousands of altered isoforms, and KEGG enrichment shows a shift from inflammatory and immune-associated programs in PRE samples toward oxidative phosphorylation, proteasome, and neurodegeneration-associated programs in POST samples. In addition, interferon-stimulated genes including IFIT1, IFI6, and STAT1 switch their dominant transcript after therapy. Together, these results show that treatment reshapes not only pathway activity, but also isoform choice within individual genes.
 
@@ -34,12 +38,12 @@ Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV
 - **Gene Viewer**: Stacked bar, grouped bar, and heatmap views of isoform expression across tissues or individual cell lines
 - **Isoform Switching**: Detect changes in dominant isoform between tissue groups or cell lines, with bootstrap confidence intervals
 - **Isoform Diversity**: Normalized Shannon entropy quantifying how evenly isoforms are expressed per gene per tissue
-- **Isoform Exon Structure**: Tile-grid visualization of every isoform's exon composition for any gene, with click-to-zoom into a single-transcript detail view showing real genomic proportions, intron sizes, and per-exon coordinates. Available in Diversity, Tissue-Specific, and Switching tabs.
-- **Tissue-Specific Isoforms**: Identify transcripts predominantly expressed in a single tissue, with optional gene-name search to query specific genes
+- **Isoform Exon Structure**: Tile-grid visualization of every isoform's exon composition for any gene, with click-to-zoom into a single-transcript detail view showing real genomic proportions and per-exon coordinates. Available in Diversity, Tissue-Specific, and Switching tabs.
+- **Tissue-Specific Isoforms**: Identify transcripts predominantly expressed in a single tissue, with optional gene-name search
 - **Clustering**: PCA and UMAP embeddings at isoform or gene level, with external data projection
 - **Tissue Correlation**: Pairwise correlation heatmaps across tissues or cell lines
 - **Drug Response**: GDSC1/GDSC2 drug sensitivity overlaid on expression embeddings
-- **Differential Expression**: Precomputed DESeq2 (325 tissue pairs) and runtime Wilcoxon tests
+- **Differential Expression**: Precomputed DESeq2 (325 tissue pairs + 1 GBM pair) and runtime Wilcoxon tests
 - **Pathway Enrichment**: KEGG enrichment via clusterProfiler, directional from DE or pooled from switching
 - **Circos**: Genome-wide isoform expression landscape with switching event overlay
 - **QC & Distribution**: Per-sample quality metrics across tissue types
@@ -52,11 +56,10 @@ Paired glioblastoma biopsies from 3 patients before and after G207 oncolytic HSV
 - **Drug response:** GDSC1 (378 drugs) and GDSC2 (286 drugs) via [Cell Model Passports](https://cellmodelpassports.sanger.ac.uk/downloads)
 - **Annotations:** GENCODE v49 (biotype, exons, length, per-exon coordinates), Ensembl BioMart release 115 (UniProt, Pfam, InterPro)
 - **External dataset:** 6 glioblastoma patient samples from [GSE162643](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE162643) (pre/post G207 oncolytic HSV treatment)
-- **Large Dataset:** Data used in running the app locally that are too large for github can be found [here](https://zenodo.org/records/19475049)
 
-## Running locally
+## Running Locally
 
-The simplest way to use IsoScope is the [live Hugging Face Space](https://horvathlab-isoscope.hf.space/). To run a local copy:
+The simplest way to use IsoScope is the [live Hugging Face Space](https://huggingface.co/spaces/HorvathLab/IsoScope). To run a local copy:
 
 **Prerequisites:**
 
@@ -69,24 +72,34 @@ git clone https://github.com/HorvathLab/IsoScope.git
 cd IsoScope
 ```
 
-Data files are available at Zenodo: <https://zenodo.org/records/19475049>. Download and place the following files in `shiny_data/`:
+Cloning the repository brings the smaller reference files in `data/` with it. The large expression matrices and DESeq2 database must be downloaded separately from Zenodo (<https://zenodo.org/records/19475049>) and placed in `shiny_data/` alongside the files copied from `data/`.
+
+**Files included in the repository (`data/`):**
 
 | File | Description |
 |------|-------------|
-| `quants.db` | Transcript TPM matrix (SQLite, 827 MB) |
-| `deseq2.db` | Precomputed DESeq2 results (SQLite, distributed as `.zip`) |
 | `sample_metadata.csv` | Sample-to-tissue mapping (673 rows) |
 | `tissue_avg.csv` | Tissue-averaged expression |
-| `dominant_isoforms.csv` | Dominant isoform per gene per tissue with bootstrap CIs |
 | `diversity_range.csv` | Per-gene entropy range across tissues |
 | `transcript_annotations.csv` | Biotype, exon count, transcript length |
-| `transcript_exons.csv.gz` | Per-exon coordinates from GENCODE v49 (powers the exon structure view) |
 | `transcript_coords.csv` | Genomic coordinates for Circos |
+| `transcript_exons.csv.gz` | Per-exon coordinates from GENCODE v49 |
 | `protein_annotations_collapsed.csv` | UniProt, Pfam, InterPro per transcript |
 | `enst_to_refseq.csv` | ENST-to-RefSeq NM mapping (53,946 entries) |
 | `gdsc1_matched.csv` | GDSC1 drug response matched to CCLE |
 | `gdsc2_matched.csv` | GDSC2 drug response matched to CCLE |
-| `tpm_matrix.txt.gz` | Gene-level TPM from STAR (optional, for gene-level clustering) |
+| `biomart_tx_info.csv`, `biomart_pfam.csv`, `biomart_interpro.csv` | Raw BioMart pulls (intermediate, not loaded at runtime) |
+
+**Files to download from Zenodo:**
+
+| File | Size | Description |
+|------|------|-------------|
+| `quants.db` | 867 MB | Transcript TPM matrix (SQLite, 32,766 transcripts x 673 samples) |
+| `deseq2.db-001.zip` | 3.7 GB | Precomputed DESeq2 results (unzip to `deseq2.db`) |
+| `dominant_isoforms.csv` | 112 MB | Dominant isoform per gene per tissue with bootstrap CIs |
+| `tpm_matrix.txt.gz` | 116 MB | Gene-level TPM from STAR (for gene-level clustering) |
+
+Copy the contents of `data/` into `shiny_data/` (or symlink it), then place the Zenodo downloads in the same folder. Unzip `deseq2.db-001.zip` to produce `deseq2.db`.
 
 **Launch:**
 
@@ -94,33 +107,17 @@ Data files are available at Zenodo: <https://zenodo.org/records/19475049>. Downl
 shiny::runApp()
 ```
 
-## Integrating your own data
+## Integrating Your Own Data
 
-The application ships with CCLE data as the default reference. Users can overlay their own samples without modifying any application code.
+IsoScope supports overlaying external RNA-seq datasets onto the CCLE reference. See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the step-by-step walkthrough covering Salmon quantification against GENCODE v49, merging with the CCLE TPM matrix, rebuilding `quants.db` with your samples, and registering your tissue groups in `app.R`.
 
-### Adding samples to the existing CCLE reference
+## Pipeline Scripts
 
-1. Quantify your RNA-seq data with Salmon against any GENCODE reference. If your data was quantified against RefSeq, run Script 09 first to remap NM identifiers to ENST.
-2. Run Script 01 to build count/TPM matrices from your `quant.sf` files.
-3. Run Script 07 with `--metadata` pointing to a CSV containing both CCLE and your new samples (columns: `SRR_ID`, `CellLine`, `Tissue`). Your samples should have unique tissue labels (e.g., `MY_TUMORS`).
-4. The script rebuilds `quants.db`, `tissue_avg.csv`, and all derived tables with your samples merged in.
-5. Replace the files in `shiny_data/` and relaunch. Your samples appear alongside CCLE in all tabs.
-
-In embedding-based analyses (Clustering, Drug Response), the application projects external samples onto the CCLE-derived coordinate space, displaying them as distinct markers without distorting the reference landscape. In all other tabs, your samples participate directly in the analysis using their own quantification values.
-
-### Running with your own data only (no CCLE)
-
-Follow the same steps above but with only your samples in the metadata file. The application functions as a general-purpose isoform exploration tool. The Dataset selector and CCLE/GBM toggle will not apply.
-
-> **Note:** TPM values from different quantification contexts (RefSeq vs GENCODE) are approximate when compared directly. Re-quantification from FASTQs against the same reference is recommended when overlaying onto CCLE.
-
-## Pipeline scripts
-
-All preprocessing scripts are provided in `scripts/numbered/`:
+All preprocessing scripts are in `scripts/`:
 
 | # | Script | Description |
 |---|--------|-------------|
-| 01 | `build_count_matrix.py` | tx2gene mapping + Salmon count/TPM matrix |
+| 01 | `build_count_matrix.py` | tx2gene mapping + Salmon count and TPM matrices |
 | 02 | `build_gene_counts.py` | STAR gene-level count matrix |
 | 03 | `calculate_gene_tpm.R` | Gene counts to TPM |
 | 04 | `extract_transcript_metadata.py` | Transcript annotations + genomic coordinates from GTF |
@@ -129,11 +126,7 @@ All preprocessing scripts are provided in `scripts/numbered/`:
 | 07 | `preprocess_for_shiny.py` | Build SQLite database + all app-ready tables |
 | 08 | `run_deseq2_pairwise.R` | Pairwise DESeq2 + SQLite database |
 | 09 | `integrate_external_dataset.R` | RefSeq-to-ENST mapping + external data integration |
-| 10 | `extract_transcript_exons.py` | Per-exon coordinates from GENCODE GTF (powers the exon structure view) |
-
-## Citation
-
-Azka Sajjad, Siera Martinez, Luke Johnson, Vania Ballesteros Prieto, Hovhannes Arestakesyan, Jewel Dias, Midrar Alhossiny, and Anelia Horvath. *IsoScope: Interactive visualization of transcript isoform expression across cancer cell lines.* George Washington University, 2026.
+| 10 | `extract_transcript_exons.py` | Per-exon coordinates from GENCODE GTF |
 
 ## License
 
@@ -141,20 +134,10 @@ Released under the MIT License. See `LICENSE` for full text.
 
 ## References
 
-1. Dou Z, Zhao D, Chen X, Xu C, Jin X, Zhang X, Wang Y, Xie X, Li Q, Di C, Zhang H. *Aberrant Bcl-x splicing in cancer: from molecular mechanism to therapeutic modulation.* Journal of Experimental & Clinical Cancer Research, 40, 194, 2021. doi:10.1186/s13046-021-02001-w
-2. Ghandi M, et al. *Next-generation characterization of the Cancer Cell Line Encyclopedia.* Nature, 569, 503–508, 2019.
-3. Garnett MJ, et al. *Systematic identification of genomic markers of drug sensitivity in cancer cells.* Nature, 483, 570–575, 2012.
-4. Markert JM, et al. *Phase Ib trial of mutant herpes simplex virus G207 inoculated pre- and post-tumor resection for recurrent GBM.* Molecular Therapy, 17, 199–207, 2009.
-5. Dobin A, Davis CA, Schlesinger F, Drenkow J, Zaleski C, Jha S, Batut P, Chaisson M, Gingeras TR. *STAR: ultrafast universal RNA-seq aligner.* Bioinformatics, 29(1), 15–21, 2013. doi:10.1093/bioinformatics/bts635
-6. Patro R, Duggal G, Love MI, Irizarry RA, Kingsford C. *Salmon provides fast and bias-aware quantification of transcript expression.* Nature Methods, 14(4), 417–419, 2017. doi:10.1038/nmeth.4197
-7. Soneson C, Love MI, Robinson MD. *Differential analyses for RNA-seq: transcript-level estimates improve gene-level inferences.* F1000Research, 4, 1521, 2016. doi:10.12688/f1000research.7563.2
-8. Love MI, Huber W, Anders S. *Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.* Genome Biology, 15, 550, 2014.
-9. Wu T, Hu E, Xu S, Chen M, Guo P, Dai Z, Feng T, Zhou L, Tang W, Zhan L, Fu X, Liu S, Bo X, Yu G. *clusterProfiler 4.0: A universal enrichment tool for interpreting omics data.* The Innovation, 2(3), 100141, 2021. doi:10.1016/j.xinn.2021.100141
-10. Martin FJ, et al. *Ensembl 2023.* Nucleic Acids Research, 51, D933–D941, 2023.
-11. The UniProt Consortium. *UniProt: the Universal Protein Knowledgebase in 2023.* Nucleic Acids Research, 51, D523–D531, 2023.
-12. Mistry J, et al. *Pfam: The protein families database in 2021.* Nucleic Acids Research, 49, D412–D419, 2021.
-13. Paysan-Lafosse T, et al. *InterPro in 2022.* Nucleic Acids Research, 51, D418–D427, 2023.
+See the associated publication for full methodological details and references:
+
+Sajjad A, Martinez S, Johnson L, Ballesteros Prieto V, Arestakesyan H, Dias J, Alhossiny M, and Horvath A. *IsoScope: Interactive Pan-Cancer Isoform-Level Analysis Integrating CCLE and User-Defined RNA-seq Data.* Bioinformatics, 2026.
 
 ## Contact
 
-Horvath Lab, Department of Biochemistry and Molecular Medicine, The George Washington University. [GitHub](https://github.com/HorvathLab)
+Horvath Lab, Department of Biochemistry and Molecular Medicine, The George Washington University.
