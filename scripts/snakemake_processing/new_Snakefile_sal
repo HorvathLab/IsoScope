@@ -1,0 +1,84 @@
+import subprocess
+import os
+
+REFERENCE_FASTA = "/SMHS/groups/mgpc/horvathlab/ml/rerun/new_refs/GRCh38.primary_assembly.genome.fa"
+GTF_FILE = "/SMHS/groups/mgpc/horvathlab/ml/rerun/new_refs/gencode.v49.basic.annotation.gtf"
+TRANSCRIPT_FILE = "/SMHS/groups/mgpc/horvathlab/ml/rerun/new_refs/clean_transcripts.fa"
+
+#samples
+SRR_FILE = "../srr_lists/srr_varscope_prjna682450_unix.csv" #REPLACE WITH CSV OF INTEREST
+
+DATASET = os.path.basename(SRR_FILE) \
+               .replace("srr_", "") \
+               .replace("_Data_unix.csv", "")
+
+SAMPLES = [l.strip() for l in open(SRR_FILE) if l.strip()]
+
+def get_read_length(srr):
+    cmd = f"vdb-dump {srr} -R1 | grep 'READ_LEN' | cut -d ':' -f2 | xargs | cut -d',' -f1"
+    read_len = int(subprocess.check_output(cmd, shell=True).decode().strip())
+    return read_len
+
+SRR_OVERHANG = {srr: get_read_length(srr) - 1 for srr in SAMPLES}
+UNIQUE_OVERHANGS = sorted(set(SRR_OVERHANG.values()))
+
+rule all:
+    input:
+        expand(f"final_results/salmon/{DATASET}/{{sample}}_salmon/quant.sf", sample=SAMPLES),
+        expand(f"../results/star/{{sample}}.ReadsPerGene.out.tab", sample=SAMPLES)
+
+rule download_and_dump:
+    output:
+        "../fastq/{sample}_1.fastq",
+        "../fastq/{sample}_2.fastq"
+    threads: 30
+    shell:
+        """
+
+        bash wait.sh download2.sh {wildcards.sample} {threads}
+
+        """
+
+rule salmon:
+    input:
+        "../results/star/{sample}.Aligned.toTranscriptome.out.bam"
+    output:
+        directory("final_results/salmon/{DATASET}/{sample}_salmon/quant.sf")
+    threads: 30
+    shell:
+        """
+
+        bash wait.sh new_salmon.sh {TRANSCRIPT_FILE} {input[0]} {threads} {output}
+
+
+        """
+
+rule star_genome:
+    output:
+        directory("new_refs/Homo_sapiens_{overhang}"),
+        "new_refs/Homo_sapiens_{overhang}/genomeParameters.txt"
+    params:
+        overhang=lambda wildcards: int(wildcards.overhang)
+    threads: 30
+    shell:
+        """
+        bash wait.sh star_genome.sh {threads} {output[0]} {REFERENCE_FASTA} {GTF_FILE} {params.overhang}
+
+        """
+
+rule star_align:
+    input:
+        "../fastq/{sample}_1.fastq",
+        "../fastq/{sample}_2.fastq",
+        genome_params=lambda wildcards: f"new_refs/Homo_sapiens_{SRR_OVERHANG[wildcards.sample]}/genomeParameters.txt",
+        genome_dir=lambda wildcards: f"new_refs/Homo_sapiens_{SRR_OVERHANG[wildcards.sample]}"
+    output:
+        "../results/star/{sample}.Aligned.out.bam",
+        "../results/star/{sample}.ReadsPerGene.out.tab",
+        "../results/star/{sample}.Aligned.toTranscriptome.out.bam"
+    threads: 37
+    shell:
+        """
+        bash wait.sh align.sh {threads} {input.genome_dir} {input[0]} {input[1]} ../results/star/{wildcards.sample}.
+
+        """
