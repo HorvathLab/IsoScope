@@ -141,7 +141,7 @@ git clone https://github.com/HorvathLab/IsoScope.git
 cd IsoScope
 ```
 
-Download the data from Zenodo (<to be added>) and place it in `shiny_data/` next to `app.R`, keeping one folder per dataset:
+Download the data from Zenodo (Zenodo link to be added) and place it in `shiny_data/` next to `app.R`, keeping one folder per dataset:
 
 ```
 shiny_data/
