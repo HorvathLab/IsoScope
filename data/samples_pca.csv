@@ -1,0 +1,49 @@
+sample_id,sample_label,subject_id,group_label,covariate_tissue,covariate_age_at_diagnosis,covariate_gleason,covariate_stage
+SRR39728037,NR_01_BmRC,NR_01,BmRC,Primary adenocarcinoma,60,7,T2b
+SRR39728036,NR_02_NBmRC,NR_02,NBmRC,Primary adenocarcinoma,67,7,T2b
+SRR39728034,NR_04_NBmRC,NR_04,NBmRC,Primary adenocarcinoma,69,7,T2b
+SRR39728033,NR_05_BmRC,NR_05,BmRC,Primary adenocarcinoma,72,9,T1c
+SRR39728032,NR_06_NBmRC,NR_06,NBmRC,Primary adenocarcinoma,59,7,T1c
+SRR39728031,NR_07_NBmRC,NR_07,NBmRC,Primary adenocarcinoma,54,7,T2a
+SRR39728030,NR_08_BmRC,NR_08,BmRC,Primary adenocarcinoma,64,7,T1c
+SRR39728029,NR_09_BmRC,NR_09,BmRC,Primary adenocarcinoma,73,7,T1c
+SRR39728028,NR_10_NBmRC,NR_10,NBmRC,Primary adenocarcinoma,67,9,T2c
+SRR39728027,NR_11_NBmRC,NR_11,NBmRC,Primary adenocarcinoma,65,9,T2c
+SRR39728026,NR_12_NBmRC,NR_12,NBmRC,Primary adenocarcinoma,66,9,T1c
+SRR39728025,NR_13_NBmRC,NR_13,NBmRC,Primary adenocarcinoma,60,8,T1c
+SRR39728024,NR_14_NBmRC,NR_14,NBmRC,Primary adenocarcinoma,64,8,T1c
+SRR39728023,NR_15_NBmRC,NR_15,NBmRC,Primary adenocarcinoma,68,7,T1c
+SRR39728022,RC_01_Bone_met,RC_01,Bone_met,Bone metastases,62,7,T2a
+SRR39728019,RC_03_BmRC,RC_03,BmRC,Primary adenocarcinoma,64,7,T3
+SRR39728020,RC_03_Bone_met,RC_03,Bone_met,Bone metastases,64,7,T3
+SRR39728018,RC_04_BmRC,RC_04,BmRC,Primary adenocarcinoma,68,Poorly differentiated,T1c
+SRR39728016,RC_05_BmRC,RC_05,BmRC,Primary adenocarcinoma,57,9,T2a
+SRR39728017,RC_05_Bone_met,RC_05,Bone_met,Bone metastases,57,9,T2a
+SRR39728014,RC_06_BmRC,RC_06,BmRC,Primary adenocarcinoma,49,9,T2b
+SRR39728015,RC_06_Bone_met,RC_06,Bone_met,Bone metastases,49,9,T2b
+SRR39728013,RC_07_BmRC,RC_07,BmRC,Primary adenocarcinoma,49,9,T1c
+SRR39728012,RC_08_Bone_met,RC_08,Bone_met,Bone metastases,67,,
+SRR39728011,RC_09_Bone_met,RC_09,Bone_met,Bone metastases,75,,
+SRR39728010,RC_10_Bone_met,RC_10,Bone_met,Bone metastases,62,9,
+SRR39728009,RC_11_BmRC,RC_11,BmRC,Primary adenocarcinoma,54,8,T1c
+SRR39728008,RC_12_Bone_met,RC_12,Bone_met,Bone metastases,74,9,
+SRR39728007,RC_13_Bone_met,RC_13,Bone_met,Bone metastases,66,,
+SRR39728004,RC_15_BmRC,RC_15,BmRC,Primary adenocarcinoma,57,9,T1c
+SRR39728005,RC_15_Bone_met,RC_15,Bone_met,Bone metastases,57,9,T1c
+SRR39728006,RC_15_LN,RC_15,LN,Lymph node metastases,57,9,T1c
+SRR39728002,RC_16_BmRC,RC_16,BmRC,Primary adenocarcinoma,67,7,T2c
+SRR39728003,RC_18_LN,RC_18,LN,Lymph node metastases,67,9,T2b
+SRR39728001,RC_18_NBmRC,RC_18,NBmRC,Primary adenocarcinoma,67,9,T2b
+SRR39728000,RC_19_NBmRC,RC_19,NBmRC,Primary adenocarcinoma,66,9,T3b
+SRR39727999,RC_20_BmRC,RC_20,BmRC,Primary adenocarcinoma,74,7,T2
+SRR39727998,RC_21_BmRC,RC_21,BmRC,Primary adenocarcinoma,69,7,T2a
+SRR39727997,RC_22_BmRC,RC_22,BmRC,Primary adenocarcinoma,71,9,T2b
+SRR39727996,RC_23_BmRC,RC_23,BmRC,Primary adenocarcinoma,69,9,T2b
+SRR39727995,RC_24_BmRC,RC_24,BmRC,Primary adenocarcinoma,62,9,T2c
+SRR39727994,RC_25_BmRC,RC_25,BmRC,Primary adenocarcinoma,62,9,T2c
+SRR39727993,RC_26_LN,RC_26,LN,Lymph node metastases,62,9,T2c
+SRR39727990,RC_27_NBmRC,RC_27,NBmRC,Primary adenocarcinoma,55,7,T2b
+SRR39727991,RC_27_LN,RC_27,LN,Lymph node metastases,55,7,T2b
+SRR39727992,RC_26_NBmRC,RC_26,NBmRC,Primary adenocarcinoma,75,7,T2a
+SRR39728021,RC_02_Bone_met,RC_02,Bone_met,Bone metastases,71,9,T2c
+SRR39728035,NR_03_NBmRC,NR_03,NBmRC,Primary adenocarcinoma,64,7,T1c

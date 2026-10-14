@@ -1,0 +1,7 @@
+sample_id,sample_label,subject_id,group_label,covariate_subtype,covariate_sex,covariate_location,covariate_platform
+SAMN16990671,P101_PRE,Patient_101,PRE,Mesenchymal,male,left frontal,HiSeq 4000 total RNA
+SAMN16990679,P105_PRE,Patient_105,PRE,Mesenchymal,female,right frontal,HiSeq 4000 total RNA
+SAMN16990678,P108_PRE,Patient_108,PRE,Proneural/Neural,male,right frontal,HiSeq 4000 total RNA
+SRR13195827,P101_POST,Patient_101,POST,Mesenchymal,male,left frontal,GAIIx polyA
+SRR13195829,P105_POST,Patient_105,POST,Mesenchymal,female,right frontal,GAIIx polyA
+SRR13195832,P108_POST,Patient_108,POST,Proneural/Neural,male,right frontal,GAIIx polyA

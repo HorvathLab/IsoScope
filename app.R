@@ -111,11 +111,39 @@ symbols_to_entrez <- function(symbols) {
   mapped[!is.na(mapped)]
 }
 
-cat("Connecting to database...\n")
-db <- dbConnect(RSQLite::SQLite(), "shiny_data/quants.db")
+DATA_ROOT <- "shiny_data"
 
-deseq_db_path <- "shiny_data/deseq2.db"
-HAS_DESEQ2 <- file.exists(deseq_db_path)
+read_dataset_meta <- function(id) {
+  p <- file.path(DATA_ROOT, id, "quants.db")
+  if (!file.exists(p)) return(NULL)
+  con <- dbConnect(RSQLite::SQLite(), p)
+  on.exit(dbDisconnect(con))
+  if (!"dataset_meta" %in% dbListTables(con)) return(NULL)
+  m <- dbReadTable(con, "dataset_meta")
+  m$db_path <- p
+  m$deseq_path <- file.path(DATA_ROOT, id, paste0("deseq2_", id, ".db"))
+  m$has_deseq <- file.exists(m$deseq_path)
+  m
+}
+
+DATASETS <- do.call(rbind, Filter(Negate(is.null),
+  lapply(list.dirs(DATA_ROOT, recursive = FALSE, full.names = FALSE), read_dataset_meta)))
+
+if (is.null(DATASETS) || nrow(DATASETS) == 0)
+  stop("No datasets found under ", DATA_ROOT)
+
+REF_ID <- DATASETS$dataset_id[DATASETS$is_reference == 1][1]
+if (is.na(REF_ID)) stop("No reference dataset")
+QUERY_IDS <- DATASETS$dataset_id[DATASETS$is_reference == 0]
+
+ref_row <- DATASETS[DATASETS$dataset_id == REF_ID, ]
+cat("Reference:", REF_ID, "|", ref_row$n_samples, "samples\n")
+cat("Query datasets:", if (length(QUERY_IDS)) paste(QUERY_IDS, collapse = ", ") else "none", "\n")
+
+db <- dbConnect(RSQLite::SQLite(), ref_row$db_path)
+
+deseq_db_path <- ref_row$deseq_path
+HAS_DESEQ2 <- ref_row$has_deseq
 deseq_db <- if (HAS_DESEQ2) {
   cat("Connecting to DESeq2 database...\n")
   dbConnect(RSQLite::SQLite(), deseq_db_path)
@@ -124,9 +152,25 @@ deseq_db <- if (HAS_DESEQ2) {
   NULL
 }
 
+attached_query <- NULL
+
+attach_query <- function(id) {
+  if (!is.null(attached_query)) {
+    try(dbExecute(db, "DETACH DATABASE query"), silent = TRUE)
+    attached_query <<- NULL
+  }
+  if (is.null(id) || id == REF_ID) return(invisible(NULL))
+  row <- DATASETS[DATASETS$dataset_id == id, ]
+  if (nrow(row) != 1) return(invisible(NULL))
+  dbExecute(db, sprintf("ATTACH DATABASE '%s' AS query", row$db_path))
+  attached_query <<- id
+  invisible(id)
+}
+
 ensure_db <- function() {
   if (!dbIsValid(db)) {
-    db <<- dbConnect(RSQLite::SQLite(), "shiny_data/quants.db")
+    db <<- dbConnect(RSQLite::SQLite(), ref_row$db_path)
+    attached_query <<- NULL
   }
   if (HAS_DESEQ2 && !is.null(deseq_db) && !dbIsValid(deseq_db)) {
     deseq_db <<- dbConnect(RSQLite::SQLite(), deseq_db_path)
@@ -134,8 +178,10 @@ ensure_db <- function() {
 }
 
 cat("Loading precomputed tables...\n")
-sample_meta_df       <- as.data.frame(fread("shiny_data/sample_metadata.csv"))
-tissue_avg_df        <- as.data.frame(fread("shiny_data/tissue_avg.csv"))
+sample_meta_df       <- dbReadTable(db, "samples")
+sample_meta_df$Tissue   <- sample_meta_df$group_label
+sample_meta_df$CellLine <- sample_meta_df$subject_id
+tissue_avg_df        <- as.data.frame(fread(file.path(DATA_ROOT, REF_ID, "group_avg.csv")))
 
 tx_annot_path <- "shiny_data/transcript_annotations.csv"
 protein_annot_path <- "shiny_data/protein_annotations_collapsed.csv"
@@ -169,7 +215,7 @@ tx_exons_df <- if (HAS_TX_EXONS) {
 join_annotations <- function(df) {
   if (!"transcript_id" %in% names(df))
     return(df)
-  df$tx_id_clean <- sub("\\..*", "", df$transcript_id)
+  df$tx_id_clean <- df$transcript_id
   if (!is.null(tx_annot_df)) {
     df <- df %>% left_join(
       tx_annot_df %>%
@@ -233,8 +279,34 @@ join_annotations <- function(df) {
 }
 
 tissue_avg_df$display_label <- paste0(tissue_avg_df$gene, " | ", tissue_avg_df$transcript_id)
-diversity_range_df   <- as.data.frame(fread("shiny_data/diversity_range.csv"))
-dominant_isoforms_df <- as.data.frame(fread("shiny_data/dominant_isoforms.csv"))
+
+get_active_avg <- function(id) {
+  if (is.null(id) || id == REF_ID) return(tissue_avg_df)
+  if (!is.null(AVG_CACHE[[id]])) return(AVG_CACHE[[id]])
+  p <- file.path(DATA_ROOT, id, "group_avg.csv")
+  if (!file.exists(p)) return(tissue_avg_df)
+  q <- fread(p)
+  gcols <- setdiff(names(q), c("gene", "transcript_id", "display_label"))
+  setnames(q, gcols, pretty_group(gcols, id))
+  q <- q[, setdiff(names(q), c("display_label", names(tissue_avg_df)[!names(tissue_avg_df) %in% c("gene", "transcript_id")])), with = FALSE]
+  m <- merge(as.data.table(tissue_avg_df)[, display_label := NULL], q,
+             by = c("gene", "transcript_id"), all = TRUE)
+  num <- names(m)[vapply(m, is.numeric, logical(1))]
+  for (col in num) set(m, which(is.na(m[[col]])), col, 0)
+  m <- as.data.frame(m)
+  m$display_label <- paste0(m$gene, " | ", m$transcript_id)
+  AVG_CACHE[[id]] <- m
+  m
+}
+diversity_range_df   <- as.data.frame(fread(file.path(DATA_ROOT, REF_ID, "diversity_range.csv")))
+if ("most_diverse_group" %in% names(diversity_range_df)) {
+  diversity_range_df$most_diverse_tissue  <- diversity_range_df$most_diverse_group
+  diversity_range_df$least_diverse_tissue <- diversity_range_df$least_diverse_group
+}
+dominant_isoforms_df <- as.data.frame(fread(file.path(DATA_ROOT, REF_ID, "dominant_isoforms.csv")))
+if ("group_label" %in% names(dominant_isoforms_df)) {
+  dominant_isoforms_df$tissue <- dominant_isoforms_df$group_label
+}
 gdsc_response_df     <- as.data.frame(fread("shiny_data/gdsc2_matched.csv"))
 gdsc1_response_df <- if (file.exists("shiny_data/gdsc1_matched.csv")) {
   as.data.frame(fread("shiny_data/gdsc1_matched.csv"))
@@ -242,14 +314,59 @@ gdsc1_response_df <- if (file.exists("shiny_data/gdsc1_matched.csv")) {
   NULL
 }
 transcript_coords_df <- as.data.frame(fread("shiny_data/transcript_coords.csv"))
+if ("gene" %in% names(transcript_coords_df) && !"gene_name" %in% names(transcript_coords_df))
+  names(transcript_coords_df)[names(transcript_coords_df) == "gene"] <- "gene_name"
 
-gene_tpm_path <- "shiny_data/tpm_matrix.txt.gz"
+gene_tpm_path <- file.path(DATA_ROOT, REF_ID, "salmon_gene_tpm.csv.gz")
 HAS_GENE_TPM <- file.exists(gene_tpm_path)
 gene_tpm_df <- if (HAS_GENE_TPM) {
   cat("Loading gene-level TPM matrix...\n")
-  as.data.frame(fread(gene_tpm_path))
+  g <- as.data.frame(fread(gene_tpm_path))
+  id2label <- setNames(sample_meta_df$sample_label, sample_meta_df$sample_id)
+  hit <- names(g) %in% names(id2label)
+  names(g)[hit] <- id2label[names(g)[hit]]
+  g
 } else {
   NULL
+}
+
+if (!is.null(protein_annot_df) && !is.null(tx_annot_df) &&
+    !any(grepl("\\.", head(protein_annot_df$transcript_id, 200)))) {
+  ver_map <- setNames(tx_annot_df$transcript_id, sub("\\..*", "", tx_annot_df$transcript_id))
+  ver_map <- ver_map[!duplicated(names(ver_map))]
+  protein_annot_df$transcript_id <- unname(ver_map[protein_annot_df$transcript_id])
+  protein_annot_df <- protein_annot_df[!is.na(protein_annot_df$transcript_id), ]
+}
+cat("Versioned IDs: annotations", any(grepl("\\.", head(tx_annot_df$transcript_id))),
+    "| exons", any(grepl("\\.", head(tx_exons_df$transcript_id))),
+    "| coords", any(grepl("\\.", head(transcript_coords_df$transcript_id))), "\n")
+
+QUERY_CON <- new.env()
+DESEQ_CON <- new.env()
+AVG_CACHE <- new.env()
+
+query_con <- function(id) {
+  if (is.null(id) || id == REF_ID) return(NULL)
+  con <- QUERY_CON[[id]]
+  if (is.null(con) || !dbIsValid(con)) {
+    row <- DATASETS[DATASETS$dataset_id == id, ]
+    if (nrow(row) != 1) return(NULL)
+    con <- dbConnect(RSQLite::SQLite(), row$db_path)
+    QUERY_CON[[id]] <- con
+  }
+  con
+}
+
+deseq_con <- function(id) {
+  if (id == REF_ID) return(deseq_db)
+  con <- DESEQ_CON[[id]]
+  if (is.null(con) || !dbIsValid(con)) {
+    row <- DATASETS[DATASETS$dataset_id == id, ]
+    if (nrow(row) != 1 || !row$has_deseq) return(NULL)
+    con <- dbConnect(RSQLite::SQLite(), row$deseq_path)
+    DESEQ_CON[[id]] <- con
+  }
+  con
 }
 
 tissue_rename <- c(
@@ -279,35 +396,100 @@ tissue_list    <- sort(unique(sample_meta_df$Tissue))
 sample_cols    <- sample_meta_df$sample_label
 cell_line_list <- sort(unique(sample_meta_df$CellLine))
 drug_list      <- sort(unique(gdsc_response_df$DRUG_NAME))
-drug_list_1    <- if (!is.null(gdsc1_response_df))
+drug_list_1    <- if (!is.null(gdsc1_response_df)) {
   sort(unique(gdsc1_response_df$DRUG_NAME))
-else
+} else {
   character(0)
+}
 TISSUE_COLORS  <- tissue_colors(tissue_list)
 
-CCLE_SAMPLES <- sample_meta_df$CellLine[!sample_meta_df$Tissue %in% c("PRE_G207", "POST_G207")]
-GBM_SAMPLES  <- sample_meta_df$CellLine[sample_meta_df$Tissue %in% c("PRE_G207", "POST_G207")]
+GROUP_LABELS <- c(
+  "Adjacent" = "Adjacent",
+  "Tumor" = "Tumor",
+  "BmRC" = "Primary (bone-met)",
+  "NBmRC" = "Primary (non-met)",
+  "Bone_met" = "Bone met",
+  "LN" = "LN met",
+  "PRE" = "Pre-G207",
+  "POST" = "Post-G207"
+)
+DATASET_PREFIX <- c("hcc" = "HCC", "pca" = "PCa", "gbm" = "GBM")
 
-biotype_list <- if (HAS_TX_ANNOT)
+pretty_group <- function(g, ds) {
+  ds <- rep_len(ds, length(g))
+  lbl <- ifelse(g %in% names(GROUP_LABELS), GROUP_LABELS[g], g)
+  pre <- DATASET_PREFIX[ds]
+  ifelse(is.na(pre), lbl, paste(pre, lbl))
+}
+
+QUERY_GROUPS <- do.call(rbind, lapply(QUERY_IDS, function(id) {
+  con <- dbConnect(RSQLite::SQLite(), DATASETS$db_path[DATASETS$dataset_id == id])
+  on.exit(dbDisconnect(con))
+  g <- dbGetQuery(con, "SELECT group_label, COUNT(*) AS n FROM samples GROUP BY group_label")
+  data.frame(dataset = id, raw = g$group_label, n = g$n,
+             pretty = pretty_group(g$group_label, id), stringsAsFactors = FALSE)
+}))
+
+GROUP_FULL <- c(
+  "Adjacent" = "Adjacent normal",
+  "Tumor" = "Tumor",
+  "BmRC" = "Primary, bone-metastatic",
+  "NBmRC" = "Primary, non-metastatic",
+  "Bone_met" = "Bone metastasis",
+  "LN" = "Lymph node metastasis",
+  "PRE" = "Pre-G207",
+  "POST" = "Post-G207"
+)
+DATASET_FULL <- c("hcc" = "Liver", "pca" = "Prostate", "gbm" = "Glioblastoma")
+if (!is.null(QUERY_GROUPS) && nrow(QUERY_GROUPS) > 0) {
+  full_lbl <- ifelse(QUERY_GROUPS$raw %in% names(GROUP_FULL), GROUP_FULL[QUERY_GROUPS$raw], QUERY_GROUPS$raw)
+  QUERY_GROUPS$full <- paste0(DATASET_FULL[QUERY_GROUPS$dataset], ": ", full_lbl)
+}
+
+legend_label <- function(x) {
+  if (is.null(QUERY_GROUPS) || nrow(QUERY_GROUPS) == 0) return(x)
+  r <- QUERY_GROUPS$full[match(x, QUERY_GROUPS$pretty)]
+  ifelse(is.na(r), x, r)
+}
+
+raw_group <- function(x) {
+  r <- QUERY_GROUPS$raw[match(x, QUERY_GROUPS$pretty)]
+  ifelse(is.na(r), x, r)
+}
+
+if (!is.null(QUERY_GROUPS) && nrow(QUERY_GROUPS) > 0) {
+  q_pal <- c("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02",
+             "#a6761d", "#1f78b4", "#b2182b", "#4d4d4d")
+  q_pal <- if (nrow(QUERY_GROUPS) <= length(q_pal)) q_pal[seq_len(nrow(QUERY_GROUPS))]
+           else colorRampPalette(q_pal)(nrow(QUERY_GROUPS))
+  TISSUE_COLORS <- c(TISSUE_COLORS, setNames(q_pal, QUERY_GROUPS$pretty))
+}
+
+CCLE_SAMPLES <- sample_meta_df$subject_id
+GBM_SAMPLES  <- character(0)
+
+biotype_list <- if (HAS_TX_ANNOT) {
   sort(unique(tx_annot_df$biotype))
-else
+} else {
   character(0)
+}
 tissue_counts <- as.integer(table(sample_meta_df$Tissue)[tissue_list])
 tissue_order <- order(tissue_counts, decreasing = TRUE)
 tissue_list <- tissue_list[tissue_order]
 tissue_counts <- tissue_counts[tissue_order]
 tissue_choices <- setNames(tissue_list, paste0(tissue_list, " (n=", tissue_counts, ")"))
-CCLE_TISSUES <- tissue_list[!tissue_list %in% c("PRE_G207", "POST_G207")]
-GBM_TISSUES  <- c("PRE_G207", "POST_G207")
+CCLE_TISSUES <- tissue_list
+GBM_TISSUES  <- character(0)
 
-default_gene <- if ("FGFR1" %in% gene_list)
+default_gene <- if ("FGFR1" %in% gene_list) {
   "FGFR1"
-else if ("EGFR" %in% gene_list)
+} else if ("EGFR" %in% gene_list) {
   "EGFR"
-else if ("KRAS" %in% gene_list)
+} else if ("KRAS" %in% gene_list) {
   "KRAS"
-else
+} else {
   gene_list[which(!grepl("^[0-9]", gene_list))[1]]
+}
 
 refseq_map_path <- "shiny_data/enst_to_refseq.csv"
 HAS_REFSEQ <- file.exists(refseq_map_path)
@@ -491,11 +673,11 @@ tab_gene_viewer <- tabPanel("Gene Viewer", sidebarLayout(
     ),
     helpText(
       tags$b("View Mode:"),
-      "'All tissues' shows one bar per tissue (averaged across cell lines).",
-      "Selecting a specific tissue shows individual cell lines within that tissue.",
+      "'All tissues' shows one bar per tissue or patient group (averaged across samples).",
+      "Selecting a specific tissue or group shows its individual samples.",
       br(),
       tags$b("Show Tissues:"),
-      "In 'All tissues' mode, pick a subset of tissues to display. Leave empty for all 26."
+      "In 'All tissues' mode, pick a subset of tissues or groups to display. Leave empty for all."
     ),
     sliderInput(
       "top_n",
@@ -531,7 +713,7 @@ tab_gene_viewer <- tabPanel("Gene Viewer", sidebarLayout(
     bookmarkButton(label = "Bookmark this view"),
     hr(),
     helpText(
-      "'All tissues' averages expression per tissue. Select a tissue to see individual cell lines."
+      "'All tissues' averages expression per tissue or group. Select one to see its individual samples."
     )
   ),
   mainPanel(
@@ -550,8 +732,8 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
       "switch_mode",
       "Comparison Mode:",
       choices = c(
-        "Tissue vs Tissue" = "tissue",
-        "Cell Line vs Cell Line" = "cellline"
+        "Group vs Group" = "tissue",
+        "Sample vs Sample" = "cellline"
       ),
       selected = "tissue"
     ),
@@ -559,7 +741,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
       condition = "input.switch_mode == 'tissue'",
       selectInput(
         "switch_tissue1",
-        "Tissue Group 1:",
+        "Group 1:",
         choices = tissue_choices,
         selected = if ("LUNG" %in% tissue_list)
           "LUNG"
@@ -568,7 +750,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
       ),
       selectInput(
         "switch_tissue2",
-        "Tissue Group 2:",
+        "Group 2:",
         choices = tissue_choices,
         selected = if ("BREAST" %in% tissue_list)
           "BREAST"
@@ -580,15 +762,15 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
       condition = "input.switch_mode == 'cellline'",
       selectizeInput(
         "switch_cl1",
-        "Cell Line 1:",
+        "Sample 1:",
         choices = NULL,
-        options = list(placeholder = "Type a cell line...")
+        options = list(placeholder = "Type a cell line or patient...")
       ),
       selectizeInput(
         "switch_cl2",
-        "Cell Line 2:",
+        "Sample 2:",
         choices = NULL,
-        options = list(placeholder = "Type a cell line...")
+        options = list(placeholder = "Type a cell line or patient...")
       ),
       uiOutput("switch_cl_tissues")
     ),
@@ -639,7 +821,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         tags$b("What is isoform switching?"),
         br(),
         "A gene can produce multiple transcript isoforms. Isoform switching occurs when",
-        "different tissues or cell lines use a different dominant isoform for the same gene.",
+        "different tissues, patient groups or samples use a different dominant isoform for the same gene.",
         br(),
         br(),
         tags$b("How it works:"),
@@ -653,7 +835,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         "= proportion of total gene TPM from the dominant isoform (0-1).",
         br(),
         tags$b("n"),
-        "= number of cell lines in that tissue group.",
+        "= number of samples in that group.",
         br(),
         tags$b("Switch score"),
         "= absolute difference in dominant isoform proportion between groups.",
@@ -665,7 +847,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         br(),
         "Medium = CIs overlap but dominant isoform still differs.",
         br(),
-        "Low = fewer than 3 cell lines in a group.",
+        "Low = fewer than 3 samples in a group.",
         br(),
         br(),
         "Click a row to see the isoform proportion breakdown below."
@@ -674,8 +856,8 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
     conditionalPanel(
       condition = "input.switch_mode == 'cellline'",
       helpText(
-        tags$b("Cell line comparison:"),
-        "Compares dominant isoforms between two individual cell lines.",
+        tags$b("Sample comparison:"),
+        "Compares dominant isoforms between two individual samples (cell lines or patient samples).",
         br(),
         br(),
         tags$b("Prop"),
@@ -750,7 +932,7 @@ tab_qc <- tabPanel("QC & Distribution", sidebarLayout(
     hr(),
     helpText(
       "Quality control overview of the isoform quantification data.",
-      "Each point is one cell line. Boxplots show the distribution within each tissue type."
+      "Each point is one sample. Boxplots show the distribution within each tissue or patient group."
     )
   ),
   mainPanel(
@@ -774,7 +956,7 @@ tab_diversity <- tabPanel("Isoform Diversity", sidebarLayout(
     radioButtons(
       "div_mode",
       "View Mode:",
-      choices = c("By Tissue (averaged)" = "tissue", "By Cell Line" = "cellline"),
+      choices = c("By Tissue (averaged)" = "tissue", "By Sample" = "cellline"),
       selected = "tissue"
     ),
     conditionalPanel(
@@ -926,10 +1108,10 @@ tab_tissue_specific <- tabPanel("Tissue-Specific", sidebarLayout(
       br(),
       br(),
       tags$b("Avg TPM:"),
-      "Mean TPM of this isoform across all cell lines in the selected tissue.",
+      "Mean TPM of this isoform across all samples in the selected tissue or group.",
       br(),
       tags$b("Tissue Fraction:"),
-      "target tissue mean / sum of tissue means (0 to 1). At 26 tissues, ",
+      "target group mean / sum of group means (0 to 1). With 26 or more groups, ",
       "a fraction of 0.5 already implies strong enrichment.",
       br(),
       br(),
@@ -1000,12 +1182,12 @@ tab_clustering <- tabPanel("Clustering", sidebarLayout(
       radioButtons(
         "clust_level",
         "Expression Level:",
-        choices = c("Isoform (Salmon TPM)" = "isoform", "Gene (STAR TPM)" = "gene"),
+        choices = c("Isoform (Salmon TPM)" = "isoform", "Gene (tximport TPM)" = "gene"),
         selected = "isoform"
       ),
     checkboxInput(
       "clust_tissue_avg",
-      "Cluster by tissue averages (26 tissues instead of 667 cell lines)",
+      "Cluster by group averages instead of individual samples",
       value = FALSE
     ),
     checkboxInput("clust_3d", "3D plot (use 3 components)", value = FALSE),
@@ -1018,7 +1200,8 @@ tab_clustering <- tabPanel("Clustering", sidebarLayout(
       options = list(placeholder = "All tissues (click to filter)")
     ),
     helpText(
-      "Leave empty for all tissues. Select specific tissues to focus the clustering."
+      "Leave empty for all tissues. Select specific tissues to focus the clustering.",
+      "At least 3 samples are needed for PCA and 5 for UMAP."
     ),
     if (HAS_TX_ANNOT)
       selectInput(
@@ -1077,14 +1260,15 @@ tab_clustering <- tabPanel("Clustering", sidebarLayout(
     hr(),
     helpText(
       tags$b("What this does:"),
-      "Cell lines are clustered by expression patterns (log2(TPM+1) transformed).",
+      "Samples are clustered by expression patterns (log2(TPM+1) transformed).",
+      "When a query dataset is selected, its samples are projected onto the reference embedding (Isoform level).",
       br(),
       br(),
       tags$b("Isoform (Salmon TPM):"),
-      "Captures splicing differences between cell lines.",
+      "Captures splicing differences between samples.",
       br(),
-      tags$b("Gene (STAR TPM):"),
-      "Standard gene expression view. (612/667 cell lines available in STAR data.)",
+      tags$b("Gene (tximport TPM):"),
+      "Gene-level expression summarised from Salmon with tximport. Reference cell lines only.",
       br(),
       br(),
       tags$b("PCA:"),
@@ -1094,13 +1278,13 @@ tab_clustering <- tabPanel("Clustering", sidebarLayout(
       "Non-linear embedding.",
       br(),
       br(),
-      tags$b("Tissue averages:"),
-      "26 points instead of 667."
+      tags$b("Group averages:"),
+      "One point per tissue or group instead of one per sample."
     )
   ),
   mainPanel(
     width = 9,
-    h4("Cell Line Clustering by Expression"),
+    h4("Clustering by Expression"),
     helpText(
       style = "color: #888; font-size: 12px;",
       "For 3D plots, use the camera icon in the plot toolbar to save as PNG."
@@ -1144,7 +1328,7 @@ tab_corr_heatmap <- tabPanel("Tissue Correlation",
                                    "Compare:",
                                    choices = c(
                                      "Tissue vs Tissue" = "tissue",
-                                     "Cell Line vs Cell Line" = "cellline"
+                                     "Sample vs Sample" = "cellline"
                                    ),
                                    selected = "tissue"
                                  ),
@@ -1196,11 +1380,11 @@ tab_corr_heatmap <- tabPanel("Tissue Correlation",
                              ))
 
 de_method_choices <- c("Wilcoxon Transcript (TPM)" = "wilcoxon")
-if (HAS_DESEQ2)
+if (any(DATASETS$has_deseq))
   de_method_choices <- c(
     de_method_choices,
     "DESeq2 Gene-Level" = "deseq2_gene",
-    "DESeq2 Transcript-Level" = "deseq2_tx"
+    "DESeq2 Transcript-Level (Isoforms)" = "deseq2_tx"
   )
 
 tab_de <- tabPanel("Differential Expression",
@@ -1217,8 +1401,8 @@ tab_de <- tabPanel("Differential Expression",
                          "de_mode",
                          "Comparison Mode:",
                          choices = c(
-                           "Tissue vs Tissue" = "tissue",
-                           "Cell Line vs Cell Line" = "cellline"
+                           "Group vs Group" = "tissue",
+                           "Sample vs Sample" = "cellline"
                          ),
                          selected = "tissue"
                        ),
@@ -1226,7 +1410,7 @@ tab_de <- tabPanel("Differential Expression",
                          condition = "input.de_mode == 'tissue'",
                          selectInput(
                            "de_tissue1",
-                           "Tissue 1:",
+                           "Group 1:",
                            choices = tissue_choices,
                            selected = if ("LUNG" %in% tissue_list)
                              "LUNG"
@@ -1235,27 +1419,28 @@ tab_de <- tabPanel("Differential Expression",
                          ),
                          selectInput(
                            "de_tissue2",
-                           "Tissue 2:",
+                           "Group 2:",
                            choices = tissue_choices,
                            selected = if ("BREAST" %in% tissue_list)
                              "BREAST"
                            else
                              tissue_list[min(2, length(tissue_list))]
-                         )
+                         ),
+                         uiOutput("de_availability")
                        ),
                        conditionalPanel(
                          condition = "input.de_mode == 'cellline'",
                          selectizeInput(
                            "de_cl1",
-                           "Cell Line 1:",
+                           "Sample 1:",
                            choices = NULL,
-                           options = list(placeholder = "Type a cell line...")
+                           options = list(placeholder = "Type a cell line or patient...")
                          ),
                          selectizeInput(
                            "de_cl2",
-                           "Cell Line 2:",
+                           "Sample 2:",
                            choices = NULL,
-                           options = list(placeholder = "Type a cell line...")
+                           options = list(placeholder = "Type a cell line or patient...")
                          ),
                          uiOutput("de_cl_tissues")
                        ),
@@ -1312,28 +1497,44 @@ tab_de <- tabPanel("Differential Expression",
                          tags$b("Differential Expression Analysis"),
                          br(),
                          br(),
-                         tags$b("Tissue vs Tissue:"),
+                         tags$b("Group vs Group:"),
                          br(),
-                         "Compares groups of cell lines between two tissues.",
-                         "Three methods are available:",
+                         "Compares two groups of samples: cell line tissues from the reference,",
+                         "or patient groups from the selected query dataset.",
                          br(),
                          tags$b("Wilcoxon:"),
-                         "Non-parametric rank-sum test on Salmon TPM values.",
+                         "Rank-sum test on Salmon transcript TPM. Works for any two groups,",
+                         "including a cell line tissue against a patient group.",
                          br(),
                          tags$b("DESeq2 Gene:"),
-                         "Negative binomial model on STAR raw counts (precomputed for all 325 tissue pairs).",
+                         "Negative binomial model on gene counts summarised from Salmon with tximport.",
                          br(),
                          tags$b("DESeq2 Transcript:"),
-                         "Same model applied to Salmon counts at transcript level.",
+                         "Same model on Salmon transcript counts.",
                          br(),
-                         "All three methods produce p-values and adjusted p-values (volcano plot).",
+                         "DESeq2 results are precomputed within each dataset, using that dataset's design,",
+                         "so both groups must come from the same dataset.",
                          br(),
                          br(),
-                         tags$b("Cell Line vs Cell Line:"),
+                         tags$b("DESeq2 designs:"),
                          br(),
-                         "Compares two individual cell lines (single sample per group).",
-                         "Statistical testing is not possible with n=1, so only log2 fold change is computed.",
-                         "Results are ranked by fold change magnitude (MA plot)."
+                         tags$b("CCLE:"), "~ tissue; 319 of 325 tissue pairs (the 6 pairs among BILIARY, CERVIX,",
+                         "SALIVARY GLAND and SMALL INTESTINE have too few samples).",
+                         br(),
+                         tags$b("Liver:"), "Tumor vs Adjacent, paired by patient (6 patients); one flagged",
+                         "outlier sample excluded.",
+                         br(),
+                         tags$b("Prostate:"), "~ group; all 6 pairs of the 4 groups.",
+                         br(),
+                         tags$b("Glioblastoma:"), "Post vs Pre G207, paired by patient (3 patients). Pre and post",
+                         "samples differ in library preparation and sequencing platform, so differences",
+                         "partly reflect technical effects.",
+                         br(),
+                         br(),
+                         tags$b("Sample vs Sample:"),
+                         br(),
+                         "Compares two individual samples. Statistical testing is not possible with n=1,",
+                         "so only log2 fold change is computed and results are ranked by its magnitude (MA plot)."
                        )
                      ),
                      mainPanel(
@@ -1411,13 +1612,13 @@ tab_kegg <- tabPanel("Pathway Enrichment",
                            br(),
                            tags$b("From DE results:"),
                            "Takes significantly differentially expressed genes (above the fold-change and p-value cutoffs)",
-                           "and splits them by direction: genes upregulated in Tissue 1 and genes upregulated in Tissue 2.",
+                           "and splits them by direction: genes upregulated in Group 1 and genes upregulated in Group 2.",
                            "Runs separate KEGG enrichments for each direction, so you can see which pathways are",
-                           "specifically activated in each tissue. Requires running Tissue vs Tissue DE first.",
+                           "specifically activated in each group. Requires running Group vs Group DE first.",
                            br(),
                            br(),
                            tags$b("From Switching results:"),
-                           "Takes all genes where the dominant isoform differs between the two tissues.",
+                           "Takes all genes where the dominant isoform differs between the two groups.",
                            "Unlike DE, switching is not directional (it is not up or down, just a different isoform),",
                            "so all switching genes are pooled into a single enrichment.",
                            "This reveals pathways where alternative isoform usage is concentrated.",
@@ -1487,7 +1688,7 @@ tab_drug <- tabPanel("Drug Response", sidebarLayout(
       radioButtons(
         "drug_level",
         "Expression Level:",
-        choices = c("Isoform (Salmon TPM)" = "isoform", "Gene (STAR TPM)" = "gene"),
+        choices = c("Isoform (Salmon TPM)" = "isoform", "Gene (tximport TPM)" = "gene"),
         selected = "isoform"
       ),
     checkboxInput("drug_3d", "3D plot", value = FALSE),
@@ -1508,7 +1709,7 @@ tab_drug <- tabPanel("Drug Response", sidebarLayout(
       multiple = TRUE,
       options = list(placeholder = "All tissues (click to filter)")
     ),
-    helpText("Leave empty for all. Select tissues to restrict the embedding."),
+    helpText("Leave empty for all. Select tissues to restrict the embedding. At least 3 cell lines are needed for PCA and 5 for UMAP."),
     actionButton("run_drug", "Run", class = "btn-primary"),
     hr(),
     sliderInput(
@@ -1524,6 +1725,8 @@ tab_drug <- tabPanel("Drug Response", sidebarLayout(
     hr(),
     helpText(
       "Cell lines embedded by isoform expression, colored by GDSC drug response.",
+      "Query samples have no drug data; they are projected onto the same embedding to show which cell lines they resemble.",
+      "Overlaying drug response on an embedding is hypothesis generating and does not by itself show isoform-driven response.",
       br(),
       br(),
       tags$b("GDSC1 vs GDSC2:"),
@@ -1531,6 +1734,13 @@ tab_drug <- tabPanel("Drug Response", sidebarLayout(
       "and different maximum drug concentrations for some drugs.",
       "AUC values between the two datasets are not directly comparable",
       "and any cross-dataset comparison should be interpreted with caution.",
+      br(),
+      br(),
+      tags$b("Concentration range:"),
+      "AUC and IC50 depend on the range of concentrations screened, and the maximum tested",
+      "concentration (MAX_CONC) can differ between drugs and between GDSC1 and GDSC2.",
+      "An LN(IC50) above ln(MAX_CONC) is extrapolated beyond the highest dose tested;",
+      "the table flags these cases. Compare cell lines within one drug rather than across drugs.",
       br(),
       br(),
       tags$b("AUC:"),
@@ -1635,7 +1845,7 @@ tab_circos <- tabPanel("Circos", sidebarLayout(
     helpText(
       tags$b("Circos Plot"),
       br(),
-      "Genome-wide view of isoform expression for the selected tissue.",
+      "Genome-wide view of isoform expression for the selected tissue or group.",
       br(),
       br(),
       tags$b("Outer track (bars):"),
@@ -1646,7 +1856,7 @@ tab_circos <- tabPanel("Circos", sidebarLayout(
       br(),
       tags$b("Arcs:"),
       "Connect the top switching genes in rank order by switch score.",
-      "Thicker arcs = stronger switching between the two tissues.",
+      "Thicker arcs = stronger switching between the two groups.",
       "These show genomic spread of switching events, not functional relationships.",
       br(),
       tags$b("Chromosome Detail:"),
@@ -1666,7 +1876,7 @@ tab_circos <- tabPanel("Circos", sidebarLayout(
       tags$b("What this shows: "),
       "The genes drawn as arcs in the Circos plot above, ranked by switch score. ",
       "Each row is one gene with its chromosome, genomic position (Mb), the switch score, ",
-      "and the dominant isoform in each of the two compared tissues.",
+      "and the dominant isoform in each of the two compared groups.",
       br(),
       br(),
       tags$b("How to use: "),
@@ -1703,10 +1913,11 @@ tab_about <- tabPanel("About", fluidRow(
       h2("IsoScope", style = "margin-top: 0; color: #225ea8; font-weight: bold; letter-spacing: 1px;"),
       p(
         style = "color: #41b6c4; font-size: 14px; font-weight: 600; margin-bottom: 0;",
-        "667 Cell Lines \u2022 26 Tissues \u2022 Transcript-Level Resolution"
+        paste0(ref_row$n_samples, " cell line samples \u2022 ", ref_row$n_groups, " tissues \u2022 ",
+               length(QUERY_IDS), " patient cohorts \u2022 Transcript-level resolution")
       ),
       h4(
-        "Interactive visualization of transcript isoform expression across cancer cell lines",
+        "Interactive visualization of transcript isoform expression across cancer cell lines and patient cohorts",
         style = "color: #666; font-weight: normal; margin-top: 10px;"
       )
     ),
@@ -1729,6 +1940,10 @@ tab_about <- tabPanel("About", fluidRow(
       ),
       ". Raw reads were aligned to GRCh38/hg38 using STAR 2.7.2a with GENCODE v49.",
       "Transcript-level expression quantified using Salmon 1.10.0.",
+      "Patient cohorts (glioblastoma, hepatocellular carcinoma, prostate adenocarcinoma) were requantified",
+      "from raw reads with the same reference and pipeline.",
+      "Gene-level values were summarised with tximport (lengthScaledTPM), and differential expression",
+      "was computed with DESeq2 1.52.0 separately within each dataset.",
       "Drug response data (AUC, IC50) from GDSC1 and GDSC2 via",
       tags$a(
         href = "https://cellmodelpassports.sanger.ac.uk/downloads",
@@ -1758,6 +1973,16 @@ tab_about <- tabPanel("About", fluidRow(
           "Systematic identification of genomic markers of drug sensitivity in cancer cells."
         ),
         "Nature, 483, 570\u2013575, 2012."
+      ),
+      tags$li(
+        "Patro, R., Duggal, G., Love, M.I., Irizarry, R.A., Kingsford, C.",
+        tags$i("Salmon provides fast and bias-aware quantification of transcript expression."),
+        "Nature Methods, 14, 417\u2013419, 2017."
+      ),
+      tags$li(
+        "Soneson, C., Love, M.I., Robinson, M.D.",
+        tags$i("Differential analyses for RNA-seq: transcript-level estimates improve gene-level inferences."),
+        "F1000Research, 4, 1521, 2015."
       ),
       tags$li(
         "Love, M.I., Huber, W., Anders, S.",
@@ -1799,6 +2024,15 @@ tab_about <- tabPanel("About", fluidRow(
           "GSE162643",
           style = "color: #225ea8;"
         )
+      ),
+      tags$li(
+        "Patient cohorts: hepatocellular carcinoma, SRA BioProject",
+        tags$a(href = "https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1427671", target = "_blank",
+               "PRJNA1427671", style = "color: #225ea8;"),
+        "; prostate adenocarcinoma, SRA BioProject",
+        tags$a(href = "https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1497887", target = "_blank",
+               "PRJNA1497887", style = "color: #225ea8;"),
+        "."
       )
     ),
     h4("Citation"),
@@ -1831,7 +2065,7 @@ tab_about <- tabPanel("About", fluidRow(
     p(
       style = "color: #999; margin-top: 30px; text-align: center;",
       paste0(
-        "IsoScope v1.0 | Built with R ",
+        "IsoScope v2.0 | Built with R ",
         R.version$major,
         ".",
         R.version$minor,
@@ -1857,67 +2091,104 @@ ui <- function(request) {
       "nav-link-padding-y" = "0.75rem"
     ),
     tabPanel("Dataset", icon = icon("database"), fluidRow(column(
-      6, offset = 3, div(
+      10, offset = 1, div(
         style = "margin-top: 30px;",
-        wellPanel(
-          h4("Dataset Selection"),
+        div(
+          class = "ds-panel",
+          style = "position: relative; overflow: hidden;",
+          style = "background: #E6F1FB; border-radius: 16px; padding: 32px;",
+          tags$style(HTML("
+            .ds-panel .shiny-options-group { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; width: 100%; }
+            .ds-panel .radio-inline, .ds-panel .form-check { display: block; width: 100%; margin: 0 !important; padding: 0 !important; }
+            .ds-panel .radio-inline label, .ds-panel .form-check label, .ds-panel label.radio-inline { display: block; width: 100%; height: 100%; margin: 0; }
+            .ds-panel input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+            .ds-panel .radio-inline > span, .ds-panel .form-check label > span { display: block; height: 100%; }
+            .ds-panel .ds-card { height: 100%; box-sizing: border-box; }
+            .ds-panel .ds-card { cursor: pointer; }
+            .ds-panel .radio-inline:hover .ds-card { box-shadow: 0 4px 12px rgba(4,44,83,0.14); }
+            .ds-panel label:has(input[type=radio]:checked) .ds-card { outline: 3px solid #378ADD; outline-offset: -2px; box-shadow: 0 4px 14px rgba(55,138,221,0.25); }
+            .ds-panel label:has(input[type=radio]:checked) .ds-card::after { content: 'SELECTED'; display: block; margin-top: 12px; font-size: 13px; letter-spacing: 0.07em; color: #378ADD; font-weight: 600; }
+          ")),
+          HTML('<svg viewBox="0 0 260 220" preserveAspectRatio="xMidYMid meet" style="position:absolute;top:28px;right:28px;width:240px;height:auto;opacity:0.9;pointer-events:none;" aria-hidden="true"><g fill="#E8B84B"><rect x="8" y="26" width="240" height="2" opacity="0.4"/><rect x="8" y="19" width="34" height="16" rx="3"/><rect x="76" y="19" width="52" height="16" rx="3"/><rect x="168" y="19" width="40" height="16" rx="3"/><rect x="8" y="82" width="240" height="2" opacity="0.4"/><rect x="8" y="75" width="34" height="16" rx="3" opacity="0.85"/><rect x="168" y="75" width="40" height="16" rx="3" opacity="0.85"/><rect x="8" y="138" width="240" height="2" opacity="0.4"/><rect x="76" y="131" width="52" height="16" rx="3" opacity="0.7"/><rect x="168" y="131" width="80" height="16" rx="3" opacity="0.7"/><rect x="8" y="194" width="240" height="2" opacity="0.4"/><rect x="8" y="187" width="34" height="16" rx="3" opacity="0.55"/><rect x="76" y="187" width="52" height="16" rx="3" opacity="0.55"/><rect x="168" y="187" width="40" height="16" rx="3" opacity="0.55"/></g></svg>'),
+          div(
+            style = "font-size: 16px; font-weight: 600; color: #185FA5; letter-spacing: 0.1em; margin-bottom: 10px;",
+            "ISOSCOPE"
+          ),
+          h3(style = "font-size: 40px; font-weight: 500; color: #042C53; margin: 0 0 10px;", "Pan-cancer isoform explorer"),
+          p(
+            style = "font-size: 19px; color: #185FA5; margin: 0 0 28px; max-width: 46em;",
+            "Transcript-level expression across cancer cell lines and patient cohorts."
+          ),
+          div(
+            style = "display: flex; gap: 40px; padding-bottom: 24px; border-bottom: 1px solid #B5D4F4; margin-bottom: 24px;",
+            lapply(list(
+              list(sum(DATASETS$n_samples), "samples"),
+              list(format(ref_row$n_transcripts, big.mark = ","), "transcripts in reference"),
+              list(nrow(DATASETS), "datasets")
+            ), function(s) div(
+              div(style = "font-size: 36px; font-weight: 500; color: #042C53;", s[[1]]),
+              div(style = "font-size: 16px; color: #185FA5; margin-top: 6px;", s[[2]])
+            ))
+          ),
           radioButtons(
-            "dataset_mode",
-            NULL,
-            choices = c(
-              "CCLE Atlas (667 cell lines, 26 tissues)" = "ccle",
-              "CCLE + GBM Patient Samples (673 samples, 28 tissues)" = "both"
-            ),
-            selected = "ccle"
+            "dataset_mode", NULL,
+            choiceNames = lapply(seq_len(nrow(DATASETS)), function(i) {
+              d <- DATASETS[i, ]
+              is_ref <- d$is_reference == 1
+              accent <- if (is_ref) "#378ADD" else c("#1D9E75", "#7F77DD", "#D85A30")[((i - 1) %% 3) + 1]
+              caveat <- if (!is.na(d$mapping_rate) && nzchar(as.character(d$mapping_rate)))
+                paste0("Remapped from ", d$remapped_from, ", ", round(as.numeric(d$mapping_rate) * 100, 1), "% retained")
+              else NULL
+              div(
+                class = "ds-card",
+                style = paste0("background: #ffffff !important; border-radius: 14px; padding: 22px; border-top: 5px solid ", accent, "; min-height: 230px; box-shadow: 0 1px 3px rgba(4,44,83,0.08); transition: box-shadow 0.15s;"),
+                div(style = paste0("font-size: 13px; font-weight: 600; letter-spacing: 0.08em; color: ", accent, "; margin-bottom: 12px;"),
+                    if (is_ref) "REFERENCE" else "QUERY"),
+                div(style = "font-size: 19px; font-weight: 500; margin-bottom: 16px;", d$display_name),
+                div(style = "font-size: 44px; font-weight: 500; line-height: 1;", d$n_samples),
+                div(style = "font-size: 16px; color: #666; margin: 6px 0 14px;", "samples"),
+                div(style = "font-size: 16px; color: #555; padding-top: 12px; border-top: 1px solid #eee; line-height: 1.6;",
+                    if (is_ref) {
+                      tagList(paste0(d$n_subjects, " cell lines"), tags$br(),
+                              paste0(d$n_groups, " tissues"))
+                    } else {
+                      g <- QUERY_GROUPS[QUERY_GROUPS$dataset == d$dataset_id, ]
+                      g <- g[order(-g$n), ]
+                      g_lbl <- ifelse(g$raw %in% names(GROUP_FULL), GROUP_FULL[g$raw], g$raw)
+                      tagList(
+                        tags$div(style = "font-weight: 500; color: #333; margin-bottom: 4px;",
+                                 paste0(d$n_subjects, " patients")),
+                        lapply(seq_len(nrow(g)), function(k)
+                          tags$div(tags$span(style = "font-weight: 600; color: #042C53; display: inline-block; min-width: 2.2em;", g$n[k]),
+                                   g_lbl[k]))
+                      )
+                    },
+                    if (!is.null(caveat)) tagList(tags$br(), tags$span(style = "color: #993C1D;", caveat))
+                )
+              )
+            }),
+            choiceValues = DATASETS$dataset_id,
+            selected = REF_ID,
+            inline = TRUE
+          )
+        ),
+        div(
+          style = "margin-top: 24px;",
+          h4(style = "font-size: 28px; font-weight: 500; margin-bottom: 16px;", "How datasets are used"),
+          p(style = "color: #444; font-size: 18px; line-height: 1.75;",
+            "Selecting a query dataset loads it alongside the reference. Each dataset keeps its own database,",
+            "so nothing is merged and the reference is never altered."
           ),
-          hr(),
-          p(
-            style = "color: #444; font-size: 15px;",
-            "This application is built on RNA-seq data from the Cancer Cell Line Encyclopedia (CCLE),",
-            "providing isoform-level expression profiles across 667 cancer cell lines and 26 tissue types.",
-            "This dataset serves as the reference backbone for all analyses, establishing the transcriptomic",
-            "landscape against which additional datasets can be contextualized."
+          p(style = "color: #444; font-size: 18px; line-height: 1.75;",
+            "In embedding views, query samples are projected onto the reference coordinate space, showing where",
+            "individual tumours sit relative to established cell lines without distorting the reference landscape.",
+            "Drug response data is available for cell lines only, but the spatial position of patient samples",
+            "relative to sensitive and resistant lines still carries translational information."
           ),
-          p(
-            style = "color: #444; font-size: 15px;",
-            tags$b("CCLE + GBM mode"),
-            "overlays 6 glioblastoma patient samples from",
-            tags$a(
-              href = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE162643",
-              target = "_blank",
-              "GSE162643",
-              style = "color: #225ea8;"
-            ),
-            "(Todo et al.) onto the CCLE reference. These include tumor biopsies from 3 patients",
-            "before and after treatment with G207 oncolytic herpes simplex virus,",
-            "appearing as two additional tissue groups: PRE_G207 and POST_G207."
-          ),
-          p(
-            style = "color: #444; font-size: 15px;",
-            "In embedding-based analyses (Clustering, Drug Response), patient samples are projected",
-            "onto the CCLE-derived coordinate space, revealing where individual tumors sit relative",
-            "to established cell lines without distorting the reference landscape.",
-            "Drug response data (GDSC) is not available for patient samples, but their spatial position",
-            "relative to sensitive and resistant cell lines provides translational insight.",
-            "In all other tabs (Gene Viewer, Isoform Diversity, Correlation, Differential Expression, etc.),",
-            "patient samples are displayed using their own Salmon quantification values",
-            "and participate directly in the analysis alongside CCLE cell lines."
-          ),
-          tags$div(
-            style = "background: #f0f4ff; border-left: 4px solid #225ea8; padding: 12px 16px; border-radius: 4px; margin-top: 16px;",
-            tags$p(
-              style = "color: #444; font-size: 14px; margin-bottom: 8px;",
-              tags$b(style = "color: #225ea8;", "Note: "),
-              "Features that operate on individual cell lines (cell line vs cell line comparisons",
-              "in Isoform Switching and Differential Expression, drug response values) remain CCLE-only.",
-              "Patient samples appear in embedding tabs as projected points without individual-level interaction data."
-            ),
-            tags$p(
-              style = "color: #666; font-size: 13px; margin-bottom: 0;",
-              "Users can integrate their own datasets by following the preprocessing pipeline",
-              "described in the Supplementary Methods. Custom Salmon quantifications against any",
-              "GENCODE reference can be overlaid onto the CCLE reference using the same approach."
-            )
+          p(style = "color: #444; font-size: 18px; line-height: 1.75;",
+            "Differential expression is run within each dataset using its own design, so effect sizes are not",
+            "directly comparable between datasets. New datasets can be added by building a database to the",
+            "published schema and placing it in the data folder."
           )
         )
       )
@@ -1990,33 +2261,115 @@ server <- function(input, output, session) {
     selected = drug_list[1],
     server = TRUE
   )
+  log_timing <- function(label) {
+    t0 <- Sys.time()
+    function() {
+      mem <- tryCatch(sum(gc()[, 2]), error = function(e) NA)
+      cat(sprintf("[timing] %s | dataset %s | %.1f s | R heap %.0f MB\n",
+                  label, isolate(active_id()), as.numeric(Sys.time() - t0, units = "secs"), mem))
+    }
+  }
+
+  merge_quants <- function(ref, q) {
+    if (is.null(q) || nrow(q) == 0) return(ref)
+    if (nrow(ref) == 0) return(q)
+    m <- merge(as.data.table(ref), as.data.table(q), by = c("gene", "transcript_id"), all = TRUE)
+    num <- names(m)[vapply(m, is.numeric, logical(1))]
+    for (col in num) set(m, which(is.na(m[[col]])), col, 0)
+    as.data.frame(m)
+  }
+
+  fetch_quants <- function(sql, params = NULL) {
+    ref <- dbGetQuery(db, sql, params = params)
+    qc <- query_con(active_id())
+    if (is.null(qc)) return(ref)
+    q <- tryCatch(dbGetQuery(qc, sql, params = params), error = function(e) NULL)
+    merge_quants(ref, q)
+  }
+
+  quant_fields <- function() {
+    qc <- query_con(active_id())
+    union(dbListFields(db, 'quants'), if (!is.null(qc)) dbListFields(qc, 'quants'))
+  }
+
+  fetch_quant_cols <- function(cols, where = NULL, params = NULL) {
+    one <- function(con) {
+      keep <- intersect(cols, dbListFields(con, "quants"))
+      sel <- paste(paste0('"', c("gene", "transcript_id", keep), '"'), collapse = ", ")
+      sql <- paste0("SELECT ", sel, " FROM quants", if (!is.null(where)) paste0(" WHERE ", where))
+      if (is.null(params)) dbGetQuery(con, sql) else dbGetQuery(con, sql, params = params)
+    }
+    out <- one(db)
+    qc <- query_con(active_id())
+    if (!is.null(qc)) out <- merge_quants(out, one(qc))
+    for (col in setdiff(cols, names(out))) out[[col]] <- 0
+    out[, c("gene", "transcript_id", cols), drop = FALSE]
+  }
+
+  fetch_union <- function(sql) {
+    ref <- dbGetQuery(db, sql)
+    qc <- query_con(active_id())
+    if (is.null(qc)) return(ref)
+    q <- tryCatch(dbGetQuery(qc, sql), error = function(e) NULL)
+    if (is.null(q)) return(ref)
+    as.data.frame(rbindlist(list(ref, q), fill = TRUE))
+  }
+
+  active_id <- reactive({
+    if (is.null(input$dataset_mode)) REF_ID else input$dataset_mode
+  })
+
+  query_samples <- reactive({
+    id <- active_id()
+    if (id == REF_ID) return(NULL)
+    row <- DATASETS[DATASETS$dataset_id == id, ]
+    if (nrow(row) != 1) return(NULL)
+    con <- dbConnect(RSQLite::SQLite(), row$db_path)
+    on.exit(dbDisconnect(con))
+    s <- dbReadTable(con, "samples")
+    s$Tissue   <- pretty_group(s$group_label, id)
+    s$CellLine <- s$subject_id
+    s$dataset  <- id
+    s
+  })
+
+  active_meta <- reactive({
+    q <- query_samples()
+    if (is.null(q)) {
+      m <- sample_meta_df
+      m$dataset <- REF_ID
+      m
+    } else {
+      m <- sample_meta_df
+      m$dataset <- REF_ID
+      cols <- intersect(names(m), names(q))
+      rbind(m[, cols, drop = FALSE], q[, cols, drop = FALSE])
+    }
+  })
+
   active_tissues <- reactive({
-    ds <- if (is.null(input$dataset_mode))
-      "ccle"
-    else
-      input$dataset_mode
-    switch(ds,
-           ccle = CCLE_TISSUES,
-           gbm = GBM_TISSUES,
-           both = tissue_list)
+    sort(unique(active_meta()$Tissue))
   })
-  
+
+  query_tissues <- reactive({
+    q <- query_samples()
+    if (is.null(q)) character(0) else sort(unique(q$Tissue))
+  })
+
+  active_avg <- reactive({
+    get_active_avg(active_id())
+  })
+
   active_cell_lines <- reactive({
-    ds <- if (is.null(input$dataset_mode))
-      "ccle"
-    else
-      input$dataset_mode
-    switch(
-      ds,
-      ccle = sort(unique(sample_meta_df$CellLine[sample_meta_df$Tissue %in% CCLE_TISSUES])),
-      gbm = sort(unique(sample_meta_df$CellLine[sample_meta_df$Tissue %in% GBM_TISSUES])),
-      both = cell_line_list
-    )
+    sort(unique(active_meta()$CellLine))
   })
+
   
   observeEvent(input$dataset_mode, {
     at <- active_tissues()
-    tc <- tissue_counts[match(at, tissue_list)]
+    am <- active_meta()
+    tc <- as.integer(table(am$Tissue)[at])
+    ds <- am$dataset[match(at, am$Tissue)]
     new_choices <- setNames(at, paste0(at, " (n=", tc, ")"))
     for (id in c(
       "tissue_filter",
@@ -2028,7 +2381,9 @@ server <- function(input, output, session) {
       "circos_tissue"
     )) {
       updateSelectInput(session, id, choices = c(if (id == "tissue_filter")
-        c("All tissues (averaged)" = "All"), new_choices))
+        c("All tissues (averaged)" = "All"), new_choices),
+        selected = if (id %in% c("switch_tissue2", "de_tissue2") && length(new_choices) > 1)
+          new_choices[[2]] else NULL)
     }
     for (id in c(
       "gene_tissue_multi",
@@ -2120,10 +2475,51 @@ server <- function(input, output, session) {
     }
   })
   
+  DE_NOTES <- c(
+    ccle = "CCLE, ~ tissue",
+    hcc = "Liver, paired by patient",
+    pca = "Prostate, ~ group",
+    gbm = "Glioblastoma, paired by patient; confounded with library prep"
+  )
+
+  de_pair_status <- reactive({
+    g <- c(input$de_tissue1, input$de_tissue2)
+    if (any(!nzchar(g)) || length(g) < 2) return(list(kind = "none"))
+    if (g[1] == g[2]) return(list(kind = "same"))
+    in_q <- g %in% query_tissues()
+    if (any(in_q) && !all(in_q)) return(list(kind = "cross"))
+    id <- if (all(in_q)) active_id() else REF_ID
+    list(kind = if (is.null(deseq_con(id))) "nodeseq" else "within", id = id)
+  })
+
+  output$de_availability <- renderUI({
+    st <- de_pair_status()
+    box <- function(bg, fg, txt) tags$div(
+      style = paste0("background: ", bg, "; color: ", fg, "; padding: 7px 10px; border-radius: 5px; font-size: 13px; margin: -4px 0 10px;"),
+      txt)
+    switch(st$kind,
+      same = box("#fdecea", "#8a1f11", "Pick two different groups."),
+      cross = box("#fff4e5", "#7a4b00", "Groups from different datasets: Wilcoxon only."),
+      nodeseq = box("#fff4e5", "#7a4b00", "No DESeq2 results for this dataset: Wilcoxon only."),
+      within = box("#e8f4ec", "#1e5631", paste0("DESeq2 gene and transcript available (",
+                                              DE_NOTES[st$id], ")")),
+      NULL)
+  })
+
+  observeEvent(list(input$de_tissue1, input$de_tissue2, input$de_method), {
+    if (identical(input$de_mode, "tissue") &&
+        input$de_method %in% c("deseq2_gene", "deseq2_tx") &&
+        de_pair_status()$kind %in% c("cross", "nodeseq")) {
+      updateRadioButtons(session, "de_method", selected = "wilcoxon")
+      showNotification("DESeq2 is computed within each dataset. Switched to Wilcoxon.",
+                       type = "warning", duration = 6)
+    }
+  }, ignoreInit = TRUE)
+
   output$de_cl_tissues <- renderUI({
     req(input$de_mode == "cellline")
-    t1 <- sample_meta_df$Tissue[match(input$de_cl1, sample_meta_df$CellLine)]
-    t2 <- sample_meta_df$Tissue[match(input$de_cl2, sample_meta_df$CellLine)]
+    t1 <- active_meta()$Tissue[match(input$de_cl1, active_meta()$CellLine)]
+    t2 <- active_meta()$Tissue[match(input$de_cl2, active_meta()$CellLine)]
     tags$div(
       style = "background: #f0f4ff; padding: 6px 10px; border-radius: 5px; font-size: 12px; margin-bottom: 8px;",
       tags$span(style = "font-weight: 600;", input$de_cl1),
@@ -2139,9 +2535,11 @@ server <- function(input, output, session) {
   gene_data <- reactive({
     input$run_gene
     ensure_db()
+    done <- log_timing("Gene Viewer")
+    on.exit(done())
     req(input$gene)
     if (input$tissue_filter == "All") {
-      gdata <- tissue_avg_df %>% filter(gene == input$gene)
+      gdata <- active_avg() %>% filter(gene == input$gene)
       if (nrow(gdata) == 0)
         return(NULL)
       tiss_cols <- intersect(names(gdata), active_tissues())
@@ -2158,14 +2556,14 @@ server <- function(input, output, session) {
         )
       }))
     } else {
-      df <- dbGetQuery(db,
+      df <- fetch_quants(
                        "SELECT * FROM quants WHERE gene = ?",
                        params = list(input$gene))
       if (nrow(df) == 0)
         return(NULL)
       df$display_label <- paste0(df$gene, " | ", df$transcript_id)
       cols <- intersect(
-        sample_meta_df %>% filter(Tissue == input$tissue_filter) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$tissue_filter) %>% pull(sample_label),
         names(df)
       )
       if (length(cols) == 0)
@@ -2370,17 +2768,17 @@ server <- function(input, output, session) {
   gene_table_data <- reactive({
     req(input$gene)
     if (input$tissue_filter == "All") {
-      tcols <- intersect(names(tissue_avg_df), tissue_list)
+      tcols <- intersect(names(active_avg()), active_tissues())
       if (length(input$gene_tissue_multi) > 0)
         tcols <- intersect(tcols, input$gene_tissue_multi)
-      result <- tissue_avg_df %>% filter(gene == input$gene) %>%
+      result <- active_avg() %>% filter(gene == input$gene) %>%
         select(gene, transcript_id, all_of(tcols))
     } else {
-      df <- dbGetQuery(db,
+      df <- fetch_quants(
                        "SELECT * FROM quants WHERE gene = ?",
                        params = list(input$gene))
       cols <- intersect(
-        sample_meta_df %>% filter(Tissue == input$tissue_filter) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$tissue_filter) %>% pull(sample_label),
         names(df)
       )
       result <- df %>% select(gene, transcript_id, all_of(cols))
@@ -2447,8 +2845,8 @@ server <- function(input, output, session) {
   
   output$switch_cl_tissues <- renderUI({
     req(input$switch_mode == "cellline")
-    t1 <- sample_meta_df$Tissue[match(input$switch_cl1, sample_meta_df$CellLine)]
-    t2 <- sample_meta_df$Tissue[match(input$switch_cl2, sample_meta_df$CellLine)]
+    t1 <- active_meta()$Tissue[match(input$switch_cl1, active_meta()$CellLine)]
+    t2 <- active_meta()$Tissue[match(input$switch_cl2, active_meta()$CellLine)]
     tags$div(
       style = "background: #f0f4ff; padding: 6px 10px; border-radius: 5px; font-size: 12px; margin-bottom: 8px;",
       tags$span(style = "font-weight: 600;", input$switch_cl1),
@@ -2521,22 +2919,13 @@ server <- function(input, output, session) {
         result <- result %>% filter(confidence %in% c("High", "Medium"))
       result
     } else {
-      cl1_label <- sample_meta_df %>% filter(CellLine == input$switch_cl1) %>%
+      cl1_label <- active_meta() %>% filter(CellLine == input$switch_cl1) %>%
         pull(sample_label) %>% head(1)
-      cl2_label <- sample_meta_df %>% filter(CellLine == input$switch_cl2) %>%
+      cl2_label <- active_meta() %>% filter(CellLine == input$switch_cl2) %>%
         pull(sample_label) %>% head(1)
       if (length(cl1_label) == 0 || length(cl2_label) == 0)
         return(NULL)
-      df <- dbGetQuery(
-        db,
-        paste0(
-          'SELECT gene, transcript_id, "',
-          cl1_label,
-          '", "',
-          cl2_label,
-          '" FROM quants'
-        )
-      )
+      df <- fetch_quant_cols(c(cl1_label, cl2_label))
       names(df)[3:4] <- c("tpm_1", "tpm_2")
       df %>% group_by(gene) %>%
         summarise(
@@ -2571,8 +2960,8 @@ server <- function(input, output, session) {
     if (!is.null(tx_annot_df)) {
       df <- df %>%
         mutate(
-          tx1_clean = sub("\\..*", "", dominant_tx1),
-          tx2_clean = sub("\\..*", "", dominant_tx2)
+          tx1_clean = identity(dominant_tx1),
+          tx2_clean = identity(dominant_tx2)
         ) %>%
         left_join(
           tx_annot_df %>% select(transcript_id, biotype) %>% rename(biotype1 = biotype),
@@ -2757,16 +3146,16 @@ server <- function(input, output, session) {
     lbl1 <- switch_label1()
     lbl2 <- switch_label2()
     if (input$switch_mode == "tissue") {
-      gdata <- dbGetQuery(db, "SELECT * FROM quants WHERE gene = ?", params = list(gene_name))
+      gdata <- fetch_quants("SELECT * FROM quants WHERE gene = ?", params = list(gene_name))
       if (nrow(gdata) == 0)
         return(NULL)
       gdata$display_label <- paste0(gdata$gene, " | ", gdata$transcript_id)
       cols1 <- intersect(
-        sample_meta_df %>% filter(Tissue == input$switch_tissue1) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$switch_tissue1) %>% pull(sample_label),
         names(gdata)
       )
       cols2 <- intersect(
-        sample_meta_df %>% filter(Tissue == input$switch_tissue2) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$switch_tissue2) %>% pull(sample_label),
         names(gdata)
       )
       if (length(cols1) == 0 || length(cols2) == 0)
@@ -2780,21 +3169,11 @@ server <- function(input, output, session) {
         )
       )
     } else {
-      cl1_label <- sample_meta_df %>% filter(CellLine == input$switch_cl1) %>%
+      cl1_label <- active_meta() %>% filter(CellLine == input$switch_cl1) %>%
         pull(sample_label) %>% head(1)
-      cl2_label <- sample_meta_df %>% filter(CellLine == input$switch_cl2) %>%
+      cl2_label <- active_meta() %>% filter(CellLine == input$switch_cl2) %>%
         pull(sample_label) %>% head(1)
-      gdata <- dbGetQuery(
-        db,
-        paste0(
-          'SELECT gene, transcript_id, "',
-          cl1_label,
-          '", "',
-          cl2_label,
-          '" FROM quants WHERE gene = ?'
-        ),
-        params = list(gene_name)
-      )
+      gdata <- fetch_quant_cols(c(cl1_label, cl2_label), "gene = ?", list(gene_name))
       if (nrow(gdata) == 0)
         return(NULL)
       names(gdata)[3:4] <- c("tpm_1", "tpm_2")
@@ -2856,9 +3235,9 @@ server <- function(input, output, session) {
         is.null(sel) || length(sel) == 0)
       return(NULL)
     gene_name <- df$gene[sel]
-    tx1 <- sub("\\..*", "", df$dominant_tx1[sel])
-    tx2 <- sub("\\..*", "", df$dominant_tx2[sel])
-    expressed_tx <- sub("\\..*", "", tissue_avg_df$transcript_id[tissue_avg_df$gene == gene_name])
+    tx1 <- identity(df$dominant_tx1[sel])
+    tx2 <- identity(df$dominant_tx2[sel])
+    expressed_tx <- identity(active_avg()$transcript_id[active_avg()$gene == gene_name])
     g_exons <- tx_exons_df %>% filter(gene == gene_name, transcript_id %in% expressed_tx)
     if (nrow(g_exons) == 0)
       return(NULL)
@@ -3048,16 +3427,16 @@ server <- function(input, output, session) {
       gene_name <- df$gene[sel]
       lbl1 <- switch_label1()
       lbl2 <- switch_label2()
-      gdata <- dbGetQuery(db, "SELECT * FROM quants WHERE gene = ?", params = list(gene_name))
+      gdata <- fetch_quants("SELECT * FROM quants WHERE gene = ?", params = list(gene_name))
       if (nrow(gdata) == 0)
         return()
       gdata$display_label <- paste0(gdata$gene, " | ", gdata$transcript_id)
       cols1 <- intersect(
-        sample_meta_df %>% filter(Tissue == input$switch_tissue1) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$switch_tissue1) %>% pull(sample_label),
         names(gdata)
       )
       cols2 <- intersect(
-        sample_meta_df %>% filter(Tissue == input$switch_tissue2) %>% pull(sample_label),
+        active_meta() %>% filter(Tissue == input$switch_tissue2) %>% pull(sample_label),
         names(gdata)
       )
       if (length(cols1) == 0 || length(cols2) == 0)
@@ -3104,8 +3483,8 @@ server <- function(input, output, session) {
   
   qc_data <- eventReactive(input$run_qc, {
     ensure_db()
-    df <- dbGetQuery(db, "SELECT * FROM qc_stats") %>%
-      left_join(sample_meta_df %>% select(sample_label, CellLine, Tissue),
+    df <- fetch_union("SELECT * FROM qc_stats") %>%
+      left_join(active_meta() %>% select(sample_label, CellLine, Tissue),
                 by = "sample_label")
     if (length(input$qc_tissue) > 0)
       df <- df %>% filter(Tissue %in% input$qc_tissue)
@@ -3128,7 +3507,7 @@ server <- function(input, output, session) {
       y = .data[[metric]],
       fill = Tissue,
       text = paste0(
-        "Cell Line: ",
+        "Sample: ",
         CellLine,
         "\nTissue: ",
         Tissue,
@@ -3152,8 +3531,8 @@ server <- function(input, output, session) {
         alpha = 0.6,
         show.legend = FALSE
       ) +
-      scale_fill_manual(values = TISSUE_COLORS) +
-      scale_color_manual(values = TISSUE_COLORS) + coord_flip() +
+      scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) +
+      scale_color_manual(values = TISSUE_COLORS, labels = legend_label) + coord_flip() + scale_x_discrete(labels = legend_label) +
       labs(title = metric_label, x = NULL, y = metric_label) +
       theme_minimal(base_size = 13) +
       theme(
@@ -3172,7 +3551,7 @@ server <- function(input, output, session) {
       df %>% select(CellLine, Tissue, n_isoforms, n_genes, iso_per_gene),
       options = list(scrollX = TRUE, pageLength = 15),
       rownames = FALSE,
-      colnames = c("Cell Line", "Tissue", "Isoforms", "Genes", "Iso/Gene")
+      colnames = c("Sample", "Tissue / Group", "Isoforms", "Genes", "Iso/Gene")
     ) %>% formatRound(columns = "iso_per_gene", digits = 2)
   })
   output$dl_qc_table <- downloadHandler(
@@ -3219,7 +3598,7 @@ server <- function(input, output, session) {
         alpha = 0.6,
         show.legend = FALSE
       ) +
-      scale_fill_manual(values = TISSUE_COLORS) + scale_color_manual(values = TISSUE_COLORS) + coord_flip() +
+      scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) + scale_color_manual(values = TISSUE_COLORS, labels = legend_label) + coord_flip() + scale_x_discrete(labels = legend_label) +
       labs(title = metric_label, x = NULL, y = metric_label) +
       theme_minimal(base_size = 13) + theme(
         panel.grid.major.y = element_blank(),
@@ -3242,7 +3621,7 @@ server <- function(input, output, session) {
     ensure_db()
     req(input$div_gene)
     if (input$div_mode == "tissue") {
-      gdata <- tissue_avg_df %>% filter(gene == input$div_gene)
+      gdata <- active_avg() %>% filter(gene == input$div_gene)
       if (nrow(gdata) == 0)
         return(NULL)
       tissue_cols <- intersect(names(gdata), active_tissues())
@@ -3272,13 +3651,13 @@ server <- function(input, output, session) {
         })
       ) %>% filter(total_tpm >= input$div_min_tpm)
     } else {
-      df <- dbGetQuery(db,
+      df <- fetch_quants(
                        "SELECT * FROM quants WHERE gene = ?",
                        params = list(input$div_gene))
       if (nrow(df) == 0)
         return(NULL)
       df$display_label <- paste0(df$gene, " | ", df$transcript_id)
-      sample_info <- sample_meta_df %>% select(sample_label, CellLine, Tissue)
+      sample_info <- active_meta() %>% select(sample_label, CellLine, Tissue)
       cols <- intersect(sample_info$sample_label, names(df))
       if (length(cols) == 0)
         return(NULL)
@@ -3320,12 +3699,12 @@ server <- function(input, output, session) {
       return(NULL)
     is_cellline <- (input$div_mode == "cellline")
     if (!is.null(tx_annot_df)) {
-      dom_tx_ids <- sub("\\..*", "", sub(".*\\| ", "", df$dominant_isoform))
+      dom_tx_ids <- identity(sub(".*\\| ", "", df$dominant_isoform))
       df$dom_exons <- tx_annot_df$n_exons[match(dom_tx_ids, tx_annot_df$transcript_id)]
     } else {
       df$dom_exons <- NA_integer_
     }
-    n_iso <- length(unique(tissue_avg_df$transcript_id[tissue_avg_df$gene == input$div_gene]))
+    n_iso <- length(unique(active_avg()$transcript_id[active_avg()$gene == input$div_gene]))
     ttl <- paste0("Isoform Diversity: ",
                   input$div_gene,
                   " (",
@@ -3343,7 +3722,7 @@ server <- function(input, output, session) {
           else
             Shannon,
           text = paste0(
-            ifelse(is_cellline, "Cell Line: ", "Tissue: "),
+            ifelse(is_cellline, "Sample: ", "Tissue: "),
             label,
             ifelse(is_cellline, paste0("\nTissue: ", Tissue), ""),
             "\nEntropy: ",
@@ -3371,7 +3750,7 @@ server <- function(input, output, session) {
         labs(title = ttl, x = "Normalized Entropy", y = NULL) +
         theme_minimal(base_size = 13) + theme(panel.grid.minor = element_blank())
       if (is_cellline) {
-        p <- p + scale_color_manual(values = TISSUE_COLORS, name = "Tissue")
+        p <- p + scale_color_manual(values = TISSUE_COLORS, labels = legend_label, name = "Tissue")
         if (nrow(df) > 50)
           p <- p + theme(axis.text.y = element_blank())
       } else {
@@ -3387,7 +3766,7 @@ server <- function(input, output, session) {
                       y = Shannon,
                       fill = Tissue,
                       text = paste0(
-                        "Cell Line: ",
+                        "Sample: ",
                         label,
                         "\nTissue: ",
                         Tissue,
@@ -3395,8 +3774,8 @@ server <- function(input, output, session) {
                         round(Shannon, 3)
                       )
                     )) +
-          geom_col() + scale_fill_manual(values = TISSUE_COLORS) +
-          coord_flip() + scale_y_continuous(limits = c(0, 1)) +
+          geom_col() + scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) +
+          coord_flip() + scale_x_discrete(labels = legend_label) + scale_y_continuous(limits = c(0, 1)) +
           labs(title = ttl,
                x = NULL,
                y = "Normalized Entropy") +
@@ -3429,9 +3808,9 @@ server <- function(input, output, session) {
       return(NULL)
     display <- df %>% arrange(desc(Shannon))
     if (!is.null(tx_annot_df)) {
-      dom_tx_ids <- sub("\\..*", "", sub(".*\\| ", "", display$dominant_isoform))
+      dom_tx_ids <- identity(sub(".*\\| ", "", display$dominant_isoform))
       display$dom_exons <- tx_annot_df$n_exons[match(dom_tx_ids, tx_annot_df$transcript_id)]
-      gene_tx_ids <- sub("\\..*", "", tissue_avg_df$transcript_id[tissue_avg_df$gene == input$div_gene])
+      gene_tx_ids <- identity(active_avg()$transcript_id[active_avg()$gene == input$div_gene])
       gene_ec <- tx_annot_df$n_exons[match(gene_tx_ids, tx_annot_df$transcript_id)]
       gene_ec <- gene_ec[!is.na(gene_ec)]
       display$gene_exon_range <- if (length(gene_ec) > 0) {
@@ -3462,8 +3841,8 @@ server <- function(input, output, session) {
         options = list(pageLength = 20, scrollX = TRUE),
         rownames = FALSE,
         colnames = c(
-          "Cell Line",
-          "Tissue",
+          "Sample",
+          "Tissue / Group",
           "Entropy",
           "Isoforms",
           "Dominant",
@@ -3497,7 +3876,7 @@ server <- function(input, output, session) {
         ),
         rownames = FALSE,
         colnames = c(
-          "Tissue",
+          "Tissue / Group",
           "Entropy",
           "Isoforms",
           "Dominant",
@@ -3515,7 +3894,7 @@ server <- function(input, output, session) {
   })
   
   output$diversity_range_table <- renderDT({
-    iso_counts <- tissue_avg_df %>% group_by(gene) %>%
+    iso_counts <- active_avg() %>% group_by(gene) %>%
       summarise(n_isoforms = n(), .groups = "drop")
     display_df <- diversity_range_df %>%
       left_join(iso_counts, by = "gene") %>%
@@ -3585,13 +3964,13 @@ server <- function(input, output, session) {
           paste0(
             "PDF not available for ",
             nrow(df),
-            " cell lines (limit: 30). Filter by tissue to reduce, or use the interactive plot."
+            " samples (limit: 30). Filter by tissue or group to reduce, or use the interactive plot."
           ),
           type = "warning"
         )
         return()
       }
-      n_iso <- length(unique(tissue_avg_df$transcript_id[tissue_avg_df$gene == input$div_gene]))
+      n_iso <- length(unique(active_avg()$transcript_id[active_avg()$gene == input$div_gene]))
       ttl <- paste0("Isoform Diversity: ",
                     input$div_gene,
                     " (",
@@ -3615,7 +3994,7 @@ server <- function(input, output, session) {
               14), name = "Isoforms") +
           scale_x_continuous(limits = c(0, 1))
         if (is_cl_pdf) {
-          p <- p + scale_color_manual(values = TISSUE_COLORS, name = "Tissue")
+          p <- p + scale_color_manual(values = TISSUE_COLORS, labels = legend_label, name = "Tissue")
         } else {
           p <- p + scale_color_gradientn(colours = TROPICAL,
                                          limits = c(0, 1),
@@ -3640,7 +4019,7 @@ server <- function(input, output, session) {
     filename = function()
       "diversity_global_ranking.csv",
     content = function(file) {
-      iso_counts <- tissue_avg_df %>% group_by(gene) %>% summarise(n_isoforms = n(), .groups = "drop")
+      iso_counts <- active_avg() %>% group_by(gene) %>% summarise(n_isoforms = n(), .groups = "drop")
       df <- diversity_range_df %>% left_join(iso_counts, by = "gene") %>% filter(n_isoforms >= 3) %>% arrange(desc(entropy_range))
       write.csv(df, file, row.names = FALSE)
     }
@@ -3650,7 +4029,7 @@ server <- function(input, output, session) {
     req(input$div_gene)
     if (!HAS_TX_EXONS || is.null(tx_exons_df))
       return(NULL)
-    expressed_tx <- sub("\\..*", "", tissue_avg_df$transcript_id[tissue_avg_df$gene == input$div_gene])
+    expressed_tx <- identity(active_avg()$transcript_id[active_avg()$gene == input$div_gene])
     if (length(expressed_tx) == 0)
       return(NULL)
     g_exons <- tx_exons_df %>%
@@ -3739,12 +4118,12 @@ server <- function(input, output, session) {
         display <- dd %>% arrange(desc(Shannon))
         dom_label <- as.character(display$dominant_isoform[sel[1]])
         if (!is.na(dom_label) && nchar(dom_label) > 0) {
-          highlight_tx <- sub("\\..*", "", sub(".*\\| ", "", dom_label))
+          highlight_tx <- identity(sub(".*\\| ", "", dom_label))
         }
       }
     }
     df <- res$exons
-    df$tx_clean <- sub("\\..*", "", df$transcript_id)
+    df$tx_clean <- identity(df$transcript_id)
     df$exon_len <- df$end - df$start + 1
     df$fill_group <- ifelse(df$tx_clean == highlight_tx &
                               nchar(highlight_tx) > 0,
@@ -4148,8 +4527,8 @@ server <- function(input, output, session) {
   specific_results <- eventReactive(input$run_specific, {
     ensure_db()
     dataTableProxy("specific_table") %>% selectRows(NULL)
-    tissue_cols <- intersect(names(tissue_avg_df), tissue_list)
-    base_df <- tissue_avg_df
+    tissue_cols <- intersect(names(active_avg()), active_tissues())
+    base_df <- active_avg()
     if (!is.null(input$spec_gene) && nchar(input$spec_gene) > 0) {
       base_df <- base_df %>% filter(gene == input$spec_gene)
       if (nrow(base_df) == 0) {
@@ -4181,8 +4560,8 @@ server <- function(input, output, session) {
     df <- specific_results()
     if (is.null(df) || nrow(df) == 0) {
       if (!is.null(input$spec_gene) && nchar(input$spec_gene) > 0) {
-        tcols <- intersect(names(tissue_avg_df), active_tissues())
-        diag <- tissue_avg_df %>%
+        tcols <- intersect(names(active_avg()), active_tissues())
+        diag <- active_avg() %>%
           filter(gene == input$spec_gene) %>%
           mutate(
             target_tpm = .data[[input$spec_tissue]],
@@ -4300,8 +4679,8 @@ server <- function(input, output, session) {
     tx_id <- df$transcript_id[sel]
     tx_label <- df$display_label[sel]
     if (input$spec_detail_mode == "tissue") {
-      tissue_cols <- intersect(names(tissue_avg_df), tissue_list)
-      row_data <- tissue_avg_df %>% filter(transcript_id == tx_id)
+      tissue_cols <- intersect(names(active_avg()), active_tissues())
+      row_data <- active_avg() %>% filter(transcript_id == tx_id)
       if (nrow(row_data) == 0)
         return(NULL)
       tpm_vals <- as.numeric(unlist(row_data[1, tissue_cols]))
@@ -4324,7 +4703,7 @@ server <- function(input, output, session) {
                           0, 3)
                     )
                   )) +
-        geom_col() + scale_fill_manual(values = TISSUE_COLORS) + coord_flip() +
+        geom_col() + scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) + coord_flip() + scale_x_discrete(labels = legend_label) +
         labs(
           title = paste("Expression:", tx_label),
           x = NULL,
@@ -4332,12 +4711,11 @@ server <- function(input, output, session) {
         ) +
         theme_minimal(base_size = 13) + theme(legend.position = "none")
     } else {
-      row_df <- dbGetQuery(db,
-                           "SELECT * FROM quants WHERE transcript_id = ?",
+      row_df <- fetch_quants("SELECT * FROM quants WHERE transcript_id = ?",
                            params = list(tx_id))
       if (nrow(row_df) == 0)
         return(NULL)
-      sample_info <- sample_meta_df %>% select(sample_label, CellLine, Tissue)
+      sample_info <- active_meta() %>% select(sample_label, CellLine, Tissue)
       cols <- intersect(sample_info$sample_label, names(row_df))
       vals <- as.numeric(row_df[1, cols])
       plot_df <- tibble(
@@ -4353,7 +4731,7 @@ server <- function(input, output, session) {
                     text = paste0(
                       "Tissue: ",
                       Tissue,
-                      "\nCell Line: ",
+                      "\nSample: ",
                       CellLine,
                       "\nTPM: ",
                       round(TPM, 3)
@@ -4363,7 +4741,7 @@ server <- function(input, output, session) {
         geom_jitter(width = 0.2,
                     size = 1.2,
                     alpha = 0.5) +
-        scale_fill_manual(values = TISSUE_COLORS) + coord_flip() +
+        scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) + coord_flip() + scale_x_discrete(labels = legend_label) +
         labs(
           title = paste("Distribution:", tx_label),
           x = NULL,
@@ -4388,8 +4766,8 @@ server <- function(input, output, session) {
       return(NULL)
     tx_id <- df$transcript_id[sel]
     if (input$spec_detail_mode == "tissue") {
-      tissue_cols <- intersect(names(tissue_avg_df), tissue_list)
-      row_data <- tissue_avg_df %>% filter(transcript_id == tx_id)
+      tissue_cols <- intersect(names(active_avg()), active_tissues())
+      row_data <- active_avg() %>% filter(transcript_id == tx_id)
       if (nrow(row_data) == 0)
         return(NULL)
       tpm_vals <- as.numeric(unlist(row_data[1, tissue_cols]))
@@ -4414,12 +4792,11 @@ server <- function(input, output, session) {
       ) %>% formatRound(columns = c("Avg_TPM", "Fraction"),
                         digits = 3)
     } else {
-      row_df <- dbGetQuery(db,
-                           "SELECT * FROM quants WHERE transcript_id = ?",
+      row_df <- fetch_quants("SELECT * FROM quants WHERE transcript_id = ?",
                            params = list(tx_id))
       if (nrow(row_df) == 0)
         return(NULL)
-      sample_info <- sample_meta_df %>% select(sample_label, CellLine, Tissue)
+      sample_info <- active_meta() %>% select(sample_label, CellLine, Tissue)
       cols <- intersect(sample_info$sample_label, names(row_df))
       vals <- as.numeric(row_df[1, cols])
       detail_df <- tibble(
@@ -4431,7 +4808,7 @@ server <- function(input, output, session) {
         detail_df,
         options = list(pageLength = 20, scrollX = TRUE),
         rownames = FALSE,
-        colnames = c("Cell Line", "Tissue", "TPM")
+        colnames = c("Sample", "Tissue / Group", "TPM")
       ) %>% formatRound(columns = "TPM", digits = 3)
     }
   })
@@ -4445,8 +4822,8 @@ server <- function(input, output, session) {
         is.null(sel) || length(sel) == 0)
       return(NULL)
     gene_name <- df$gene[sel]
-    highlight_tx <- sub("\\..*", "", df$transcript_id[sel])
-    expressed_tx <- sub("\\..*", "", tissue_avg_df$transcript_id[tissue_avg_df$gene == gene_name])
+    highlight_tx <- identity(df$transcript_id[sel])
+    expressed_tx <- identity(active_avg()$transcript_id[active_avg()$gene == gene_name])
     g_exons <- tx_exons_df %>% filter(gene == gene_name, transcript_id %in% expressed_tx)
     if (nrow(g_exons) == 0)
       return(NULL)
@@ -4522,7 +4899,7 @@ server <- function(input, output, session) {
       )
     )
     df <- res$exons
-    df$tx_clean <- sub("\\..*", "", df$transcript_id)
+    df$tx_clean <- identity(df$transcript_id)
     df$exon_len <- df$end - df$start + 1
     df$fill_group <- ifelse(df$tx_clean == res$highlight_tx, "highlight", "normal")
     df$fill_group <- factor(df$fill_group, levels = c("normal", "highlight"))
@@ -4629,8 +5006,8 @@ server <- function(input, output, session) {
       }
       tx_id <- df$transcript_id[sel]
       tx_label <- df$display_label[sel]
-      tissue_cols <- intersect(names(tissue_avg_df), tissue_list)
-      row_data <- tissue_avg_df %>% filter(transcript_id == tx_id)
+      tissue_cols <- intersect(names(active_avg()), active_tissues())
+      row_data <- active_avg() %>% filter(transcript_id == tx_id)
       if (nrow(row_data) == 0)
         return()
       tpm_vals <- as.numeric(unlist(row_data[1, tissue_cols]))
@@ -4640,7 +5017,7 @@ server <- function(input, output, session) {
         y = TPM,
         fill = Tissue
       )) +
-        geom_col() + scale_fill_manual(values = TISSUE_COLORS) + coord_flip() +
+        geom_col() + scale_fill_manual(values = TISSUE_COLORS, labels = legend_label) + coord_flip() + scale_x_discrete(labels = legend_label) +
         labs(
           title = paste("Expression:", tx_label),
           x = NULL,
@@ -4985,6 +5362,8 @@ server <- function(input, output, session) {
   
   cluster_data <- eventReactive(input$run_cluster, {
     ensure_db()
+    done <- log_timing("Clustering")
+    on.exit(done())
     use_gene_level <- HAS_GENE_TPM &&
       !is.null(input$clust_level) && input$clust_level == "gene"
     use_3d <- input$clust_3d
@@ -5028,7 +5407,7 @@ server <- function(input, output, session) {
       if (input$clust_tissue_avg) {
         tissue_mat <- sapply(tissue_list, function(t) {
           t_cols <- intersect(
-            sample_meta_df %>% filter(Tissue == t) %>% pull(sample_label),
+            active_meta() %>% filter(Tissue == t) %>% pull(sample_label),
             colnames(num_mat)
           )
           if (length(t_cols) == 0)
@@ -5045,24 +5424,21 @@ server <- function(input, output, session) {
           Tissue = rownames(tmat)
         )
       } else {
-        active_slabels <- sample_meta_df$sample_label[sample_meta_df$Tissue %in% active_tissues()]
+        active_slabels <- active_meta()$sample_label[active_meta()$Tissue %in% active_tissues()]
         keep_cols <- colnames(num_mat) %in% active_slabels
         tmat <- t(num_mat[, keep_cols, drop = FALSE])
         tmat <- log2(tmat + 1)
-        sample_info <- sample_meta_df %>%
+        sample_info <- active_meta() %>%
           filter(Tissue %in% active_tissues()) %>%
           select(sample_label, CellLine, Tissue) %>%
           rename(sample = sample_label)
       }
       level_label <- "Gene-Level"
       
-      # Gene-mode GBM projection not supported: CCLE gene TPMs come from STAR,
-      # GBM samples were Salmon-quantified only. Mixing the two quantifiers would
-      # produce spurious separation. Switch to Isoform (Salmon TPM) for GBM projection.
       if (!is.null(input$dataset_mode) &&
-          input$dataset_mode == "both") {
+          active_id() != REF_ID) {
         showNotification(
-          "Gene-level clustering shows CCLE only. GBM samples are available in Isoform (Salmon TPM) mode.",
+          "Gene-level clustering shows reference cell lines only. Use Isoform level to project query samples.",
           type = "warning",
           duration = 6
         )
@@ -5083,8 +5459,8 @@ server <- function(input, output, session) {
       if (length(top_tx) == 0)
         return(NULL)
       if (input$clust_tissue_avg) {
-        sub <- tissue_avg_df %>% filter(transcript_id %in% top_tx)
-        tissue_cols <- intersect(names(sub), tissue_list)
+        sub <- active_avg() %>% filter(transcript_id %in% top_tx)
+        tissue_cols <- intersect(names(sub), active_tissues())
         tmat <- t(as.matrix(sub[, tissue_cols, drop = FALSE]))
         colnames(tmat) <- paste0(sub$gene, " | ", sub$transcript_id)
         tmat[is.na(tmat)] <- 0
@@ -5096,38 +5472,35 @@ server <- function(input, output, session) {
         )
       } else {
         placeholders <- paste(rep("?", length(top_tx)), collapse = ",")
-        mat_df <- dbGetQuery(
-          db,
-          paste0(
-            "SELECT * FROM quants WHERE transcript_id IN (",
+        mat_df <- fetch_quants(paste0("SELECT * FROM quants WHERE transcript_id IN (",
             placeholders,
             ")"
           ),
           params = as.list(top_tx)
         )
-        ccle_slabels <- sample_meta_df$sample_label[sample_meta_df$Tissue %in% CCLE_TISSUES]
-        ccle_cols <- intersect(intersect(sample_cols, ccle_slabels), names(mat_df))
+        ccle_slabels <- active_meta()$sample_label[active_meta()$Tissue %in% CCLE_TISSUES]
+        ccle_cols <- intersect(ccle_slabels, names(mat_df))
         tmat <- t(as.matrix(mat_df[, ccle_cols, drop = FALSE]))
         colnames(tmat) <- paste0(mat_df$gene, " | ", mat_df$transcript_id)
         tmat[is.na(tmat)] <- 0
         tmat <- log2(tmat + 1)
-        sample_info <- sample_meta_df %>%
+        sample_info <- active_meta() %>%
           filter(Tissue %in% CCLE_TISSUES) %>%
           select(sample_label, CellLine, Tissue) %>%
           rename(sample = sample_label)
         gbm_tmat <- NULL
         gbm_info <- NULL
         if (!is.null(input$dataset_mode) &&
-            input$dataset_mode == "both") {
-          gbm_slabels <- sample_meta_df$sample_label[sample_meta_df$Tissue %in% GBM_TISSUES]
-          gbm_cols <- intersect(intersect(sample_cols, gbm_slabels), names(mat_df))
+            active_id() != REF_ID) {
+          gbm_slabels <- active_meta()$sample_label[active_meta()$Tissue %in% query_tissues()]
+          gbm_cols <- intersect(gbm_slabels, names(mat_df))
           if (length(gbm_cols) > 0) {
             gbm_tmat <- t(as.matrix(mat_df[, gbm_cols, drop = FALSE]))
             colnames(gbm_tmat) <- paste0(mat_df$gene, " | ", mat_df$transcript_id)
             gbm_tmat[is.na(gbm_tmat)] <- 0
             gbm_tmat <- log2(gbm_tmat + 1)
-            gbm_info <- sample_meta_df %>%
-              filter(Tissue %in% GBM_TISSUES) %>%
+            gbm_info <- active_meta() %>%
+              filter(Tissue %in% query_tissues()) %>%
               select(sample_label, CellLine, Tissue) %>%
               rename(sample = sample_label)
           }
@@ -5140,8 +5513,12 @@ server <- function(input, output, session) {
       keep_samples <- sample_info %>%
         filter(Tissue %in% input$clust_tissue_filter) %>% pull(sample)
       keep_idx <- which(rownames(tmat) %in% keep_samples)
-      if (length(keep_idx) < 3) {
-        showNotification("Too few samples after tissue filter.", type = "error")
+      need_n <- if (input$clust_reduction == "pca") 3 else 5
+      if (length(keep_idx) < need_n) {
+        showNotification(paste0("Clustering needs at least ", need_n, " samples for ",
+                                toupper(input$clust_reduction), "; the selected tissues have ",
+                                length(keep_idx), ". Add more tissues or groups."),
+                         type = "warning", duration = 8)
         return(NULL)
       }
       tmat <- tmat[keep_idx, , drop = FALSE]
@@ -5151,12 +5528,27 @@ server <- function(input, output, session) {
         input$clust_tissue_avg) {
       keep_idx <- which(rownames(tmat) %in% input$clust_tissue_filter)
       if (length(keep_idx) < 3) {
-        showNotification("Select at least 3 tissues.", type = "error")
+        showNotification("Group-average clustering needs at least 3 tissues or groups selected.", type = "warning", duration = 8)
         return(NULL)
       }
       tmat <- tmat[keep_idx, , drop = FALSE]
       sample_info <- sample_info %>% filter(sample %in% rownames(tmat))
     }
+    min_n <- if (input$clust_reduction == "pca") 3 else 5
+    if (nrow(tmat) < min_n) {
+      showNotification(paste0("Clustering needs at least ", min_n, " samples for ",
+                              toupper(input$clust_reduction), "; the current selection has ",
+                              nrow(tmat), ". Add more tissues or groups."),
+                       type = "warning", duration = 8)
+      return(NULL)
+    }
+    keep_feat <- apply(tmat, 2, function(v) isTRUE(var(v) > 0))
+    if (sum(keep_feat) < 2) {
+      showNotification("Too few variable features in this selection to cluster.", type = "warning")
+      return(NULL)
+    }
+    tmat <- tmat[, keep_feat, drop = FALSE]
+    if (!is.null(gbm_tmat) && ncol(gbm_tmat) == length(keep_feat)) gbm_tmat <- gbm_tmat[, keep_feat, drop = FALSE]
     if (input$clust_reduction == "pca") {
       pca <- prcomp(tmat,
                     scale. = (input$clust_method == "cor"),
@@ -5185,7 +5577,7 @@ server <- function(input, output, session) {
       }
       ve <- summary(pca)$importance[2, 1:min(10, ncol(pca$x))] * 100
       embed_df <- embed_df %>% left_join(sample_info, by = "sample")
-      embed_df$is_gbm <- embed_df$Tissue %in% GBM_TISSUES
+      embed_df$is_gbm <- embed_df$Tissue %in% query_tissues()
       n_pcs_for_mag <- if (use_3d)
         3
       else
@@ -5252,7 +5644,7 @@ server <- function(input, output, session) {
         sample_info <- rbind(sample_info, gbm_info)
       }
       embed_df <- embed_df %>% left_join(sample_info, by = "sample")
-      embed_df$is_gbm <- embed_df$Tissue %in% GBM_TISSUES
+      embed_df$is_gbm <- embed_df$Tissue %in% query_tissues()
       feat_var_u <- apply(tmat, 2, var, na.rm = TRUE)
       feat_mean_u <- colMeans(tmat, na.rm = TRUE)
       top_n_feat_u <- min(100, length(feat_var_u))
@@ -5294,7 +5686,7 @@ server <- function(input, output, session) {
       ifelse(res$method == "pca", "PCA", "UMAP"),
       ifelse(res$is_3d, " 3D", ""),
       " \u2014 ",
-      ifelse(res$tissue_avg, "Tissue Averages", "Cell Lines"),
+      ifelse(res$tissue_avg, "Tissue Averages", "Samples"),
       " [",
       res$level,
       "]"
@@ -5305,10 +5697,10 @@ server <- function(input, output, session) {
         x = ~ Dim1,
         y = ~ Dim2,
         z = ~ Dim3,
-        color = ~ Tissue,
-        colors = TISSUE_COLORS[sort(unique(df$Tissue))],
+        color = ~ legend_label(Tissue),
+        colors = setNames(TISSUE_COLORS[sort(unique(df$Tissue))], legend_label(sort(unique(df$Tissue)))),
         text = ~ paste0(
-          ifelse(res$tissue_avg, "Tissue: ", "Cell Line: "),
+          ifelse(res$tissue_avg, "Tissue: ", "Sample: "),
           CellLine,
           "\nTissue: ",
           Tissue
@@ -5353,7 +5745,7 @@ server <- function(input, output, session) {
         y = Dim2,
         color = Tissue,
         text = paste0(
-          ifelse(res$tissue_avg, "Tissue: ", "Cell Line: "),
+          ifelse(res$tissue_avg, "Tissue: ", "Sample: "),
           CellLine,
           "\nTissue: ",
           Tissue,
@@ -5368,7 +5760,7 @@ server <- function(input, output, session) {
         )
       )) +
         geom_point(size = pt_size, alpha = 0.8) +
-        scale_color_manual(values = TISSUE_COLORS)
+        scale_color_manual(values = TISSUE_COLORS, labels = legend_label)
       if (nrow(gbm_df) > 0) {
         p <- p + geom_point(
           data = gbm_df,
@@ -5513,12 +5905,12 @@ server <- function(input, output, session) {
         input$clust_dot_size
       p <- ggplot(df, aes(x = Dim1, y = Dim2, color = Tissue)) +
         geom_point(size = pt_size, alpha = 0.8) +
-        scale_color_manual(values = TISSUE_COLORS) +
+        scale_color_manual(values = TISSUE_COLORS, labels = legend_label) +
         labs(
           title = paste0(
             ifelse(res$method == "pca", "PCA", "UMAP"),
             " -- ",
-            ifelse(res$tissue_avg, "Tissue Averages", "Cell Lines"),
+            ifelse(res$tissue_avg, "Tissue Averages", "Samples"),
             " [",
             res$level,
             "]"
@@ -5605,14 +5997,14 @@ server <- function(input, output, session) {
         !is.null(input$corr_biotype_filter) &&
         input$corr_biotype_filter != "All") {
       bt_tx <- tx_annot_df$transcript_id[tx_annot_df$biotype == input$corr_biotype_filter]
-      top_tx_clean <- sub("\\..*", "", top_tx)
+      top_tx_clean <- identity(top_tx)
       keep <- top_tx_clean %in% bt_tx
       top_tx <- top_tx[keep]
       if (length(top_tx) == 0)
         return(NULL)
     }
     if (input$corr_mode == "tissue") {
-      sub <- tissue_avg_df %>% filter(transcript_id %in% top_tx)
+      sub <- active_avg() %>% filter(transcript_id %in% top_tx)
       tissue_cols <- intersect(names(sub), active_tissues())
       if (length(input$corr_tissue_filter) > 0)
         tissue_cols <- intersect(tissue_cols, input$corr_tissue_filter)
@@ -5626,16 +6018,13 @@ server <- function(input, output, session) {
       )
     } else {
       placeholders <- paste(rep("?", length(top_tx)), collapse = ",")
-      mat_df <- dbGetQuery(
-        db,
-        paste0(
-          "SELECT * FROM quants WHERE transcript_id IN (",
+      mat_df <- fetch_quants(paste0("SELECT * FROM quants WHERE transcript_id IN (",
           placeholders,
           ")"
         ),
         params = as.list(top_tx)
       )
-      sample_info <- sample_meta_df %>% select(sample_label, CellLine, Tissue)
+      sample_info <- active_meta() %>% select(sample_label, CellLine, Tissue)
       if (length(input$corr_tissue_filter) > 0)
         sample_info <- sample_info %>% filter(Tissue %in% input$corr_tissue_filter)
       col_order <- intersect(sample_info$sample_label, names(mat_df))
@@ -5725,7 +6114,7 @@ server <- function(input, output, session) {
         hovertemplate = "%{x} vs %{y}<br>r = %{z:.3f}<extra></extra>"
       ) %>%
         layout(
-          title = paste0("Cell Line Correlation (", input$corr_method, ", n=", n, ")"),
+          title = paste0("Sample Correlation (", input$corr_method, ", n=", n, ")"),
           xaxis = list(
             showticklabels = n <= 50,
             tickangle = 45,
@@ -5845,27 +6234,42 @@ server <- function(input, output, session) {
     if (method == "wilcoxon")
       return(NULL)
     label <- if (method == "deseq2_gene")
-      "DESeq2 Gene-Level (precomputed from STAR counts)"
+      "DESeq2 Gene-Level (precomputed from tximport gene counts)"
     else
-      "DESeq2 Transcript-Level (precomputed from Salmon counts)"
+      "DESeq2 Transcript-Level, isoforms (precomputed from Salmon counts)"
     tags$div(style = "background: #eef4ff; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 13px;", tags$strong("Method: "), label)
   })
   
   observeEvent(input$run_de, {
     ensure_db()
+    done <- log_timing(paste("Differential expression", input$de_method))
+    on.exit(done())
+    if (input$de_mode == "tissue" && identical(input$de_tissue1, input$de_tissue2)) {
+      showNotification("Pick two different groups.", type = "warning")
+      return()
+    }
     method <- input$de_method
     if (method %in% c("deseq2_gene", "deseq2_tx")) {
-      if (!HAS_DESEQ2 || is.null(deseq_db)) {
-        showNotification("deseq2.db not found.", type = "error")
-        return()
-      }
       if (input$de_mode == "cellline") {
         showNotification("DESeq2 requires replicates. Use Wilcoxon.", type = "warning")
         return()
       }
       withProgress(message = "Querying DESeq2 results...", {
-        t1_db <- unrename_tissue(input$de_tissue1)
-        t2_db <- unrename_tissue(input$de_tissue2)
+        in_q <- c(input$de_tissue1, input$de_tissue2) %in% query_tissues()
+        if (any(in_q) && !all(in_q)) {
+          showNotification("DESeq2 results exist only within one dataset. Use Wilcoxon to compare across datasets.",
+                           type = "warning", duration = 8)
+          de_results(NULL)
+          return()
+        }
+        con <- if (all(in_q)) deseq_con(active_id()) else deseq_db
+        if (is.null(con)) {
+          showNotification("No DESeq2 database for this dataset.", type = "error")
+          de_results(NULL)
+          return()
+        }
+        t1_db <- if (all(in_q)) raw_group(input$de_tissue1) else unrename_tissue(input$de_tissue1)
+        t2_db <- if (all(in_q)) raw_group(input$de_tissue2) else unrename_tissue(input$de_tissue2)
         table_name <- if (method == "deseq2_gene")
           "gene_results"
         else
@@ -5873,22 +6277,22 @@ server <- function(input, output, session) {
         setProgress(value = 0.3,
                     detail = paste0("Fetching from ", table_name, "..."))
         res <- dbGetQuery(
-          deseq_db,
+          con,
           paste0(
             "SELECT * FROM ",
             table_name,
-            " WHERE tissue1 = ? AND tissue2 = ?"
+            " WHERE group1 = ? AND group2 = ?"
           ),
           params = list(t1_db, t2_db)
         )
         flipped <- FALSE
         if (nrow(res) == 0) {
           res <- dbGetQuery(
-            deseq_db,
+            con,
             paste0(
               "SELECT * FROM ",
               table_name,
-              " WHERE tissue1 = ? AND tissue2 = ?"
+              " WHERE group1 = ? AND group2 = ?"
             ),
             params = list(t2_db, t1_db)
           )
@@ -5924,7 +6328,7 @@ server <- function(input, output, session) {
           res <- res %>% dplyr::rename(transcript_id = feature_id, gene = gene_symbol)
         res <- res %>%
           select(-any_of(c(
-            "tissue1", "tissue2", "level", "gene_id_clean"
+            "tissue1", "tissue2", "group1", "group2", "level", "gene_id_clean"
           ))) %>%
           arrange(padj, desc(abs(log2FC)))
         de_results(res)
@@ -5936,20 +6340,18 @@ server <- function(input, output, session) {
     de_active_method("wilcoxon")
     withProgress(message = "Running DE analysis...", {
       if (input$de_mode == "tissue") {
-        t1_samples <- sample_meta_df %>%
+        t1_samples <- active_meta() %>%
           filter(Tissue == input$de_tissue1) %>% pull(sample_label)
-        t2_samples <- sample_meta_df %>%
+        t2_samples <- active_meta() %>%
           filter(Tissue == input$de_tissue2) %>% pull(sample_label)
-        cols1 <- intersect(t1_samples, dbListFields(db, "quants"))
-        cols2 <- intersect(t2_samples, dbListFields(db, "quants"))
+        cols1 <- intersect(t1_samples, quant_fields())
+        cols2 <- intersect(t2_samples, quant_fields())
         if (length(cols1) < 2 || length(cols2) < 2) {
           de_results(NULL)
           return()
         }
         setProgress(value = 0.1, detail = "Fetching expression data...")
-        all_cols <- c("gene", "transcript_id", cols1, cols2)
-        quoted <- paste(paste0('"', all_cols, '"'), collapse = ", ")
-        full_df <- dbGetQuery(db, paste0("SELECT ", quoted, " FROM quants"))
+        full_df <- fetch_quant_cols(c(cols1, cols2))
         mat1 <- as.matrix(full_df[, cols1, drop = FALSE])
         mat2 <- as.matrix(full_df[, cols2, drop = FALSE])
         mean1 <- rowMeans(mat1, na.rm = TRUE)
@@ -5985,24 +6387,15 @@ server <- function(input, output, session) {
         names(res)[names(res) == "mean_2"] <- paste0("mean_", input$de_tissue2)
         de_results(res)
       } else {
-        cl1_label <- sample_meta_df %>%
+        cl1_label <- active_meta() %>%
           filter(CellLine == input$de_cl1) %>% pull(sample_label) %>% head(1)
-        cl2_label <- sample_meta_df %>%
+        cl2_label <- active_meta() %>%
           filter(CellLine == input$de_cl2) %>% pull(sample_label) %>% head(1)
         if (length(cl1_label) == 0 || length(cl2_label) == 0) {
           de_results(NULL)
           return()
         }
-        all_df <- dbGetQuery(
-          db,
-          paste0(
-            'SELECT gene, transcript_id, "',
-            cl1_label,
-            '", "',
-            cl2_label,
-            '" FROM quants'
-          )
-        )
+        all_df <- fetch_quant_cols(c(cl1_label, cl2_label))
         names(all_df)[3:4] <- c("tpm_1", "tpm_2")
         all_df <- all_df %>%
           filter(pmax(tpm_1, tpm_2) >= input$de_min_tpm) %>%
@@ -6429,7 +6822,7 @@ server <- function(input, output, session) {
         ))
         kegg_tissue2_label("")
         kegg_source_label(paste0("Switching: ", length(genes_up), " genes"))
-        universe_symbols <- unique(tissue_avg_df$gene)
+        universe_symbols <- unique(active_avg()$gene)
         universe_symbols <- universe_symbols[!grepl("^ENSG", universe_symbols)]
       }
       genes_up <- genes_up[!grepl("^ENSG", genes_up)]
@@ -6695,6 +7088,8 @@ server <- function(input, output, session) {
   
   drug_data <- eventReactive(input$run_drug, {
     ensure_db()
+    done <- log_timing("Drug response")
+    on.exit(done())
     req(input$drug_select)
     withProgress(message = "Computing drug response embedding...", {
       use_gene <- HAS_GENE_TPM &&
@@ -6724,25 +7119,22 @@ server <- function(input, output, session) {
         if (length(top_tx) == 0)
           return(NULL)
         placeholders <- paste(rep("?", length(top_tx)), collapse = ",")
-        mat_df <- dbGetQuery(
-          db,
-          paste0(
-            "SELECT * FROM quants WHERE transcript_id IN (",
+        mat_df <- fetch_quants(paste0("SELECT * FROM quants WHERE transcript_id IN (",
             placeholders,
             ")"
           ),
           params = as.list(top_tx)
         )
-        col_order <- intersect(sample_cols, names(mat_df))
+        col_order <- intersect(active_meta()$sample_label, names(mat_df))
         tmat <- t(as.matrix(mat_df[, col_order, drop = FALSE]))
         level_label <- "Isoform-Level"
       }
       tmat[is.na(tmat)] <- 0
       tmat <- log2(tmat + 1)
-      sample_info <- sample_meta_df %>%
+      sample_info <- active_meta() %>%
         select(sample_label, CellLine, Tissue) %>%
         rename(sample = sample_label)
-      ccle_slabels_drug <- sample_meta_df$sample_label[sample_meta_df$Tissue %in% CCLE_TISSUES]
+      ccle_slabels_drug <- active_meta()$sample_label[active_meta()$Tissue %in% CCLE_TISSUES]
       col_order <- intersect(intersect(col_order, ccle_slabels_drug),
                              rownames(tmat))
       tmat_ccle <- tmat[col_order, , drop = FALSE]
@@ -6750,8 +7142,8 @@ server <- function(input, output, session) {
       gbm_tmat_drug <- NULL
       gbm_info_drug <- NULL
       if (!is.null(input$dataset_mode) &&
-          input$dataset_mode == "both") {
-        gbm_slabels_drug <- sample_meta_df$sample_label[sample_meta_df$Tissue %in% GBM_TISSUES]
+          active_id() != REF_ID) {
+        gbm_slabels_drug <- active_meta()$sample_label[active_meta()$Tissue %in% query_tissues()]
         gbm_cols_drug <- intersect(gbm_slabels_drug, rownames(tmat))
         if (length(gbm_cols_drug) > 0) {
           gbm_tmat_drug <- tmat[gbm_cols_drug, , drop = FALSE]
@@ -6765,6 +7157,17 @@ server <- function(input, output, session) {
         col_order <- intersect(sample_info$sample, rownames(tmat))
         tmat <- tmat[col_order, , drop = FALSE]
       }
+      need_n <- if (input$drug_reduction == "umap") 5 else 3
+      if (nrow(tmat) < need_n) {
+        showNotification(paste0("The embedding needs at least ", need_n, " cell lines for ",
+                                toupper(input$drug_reduction), "; the selected tissues have ",
+                                nrow(tmat), ". Add more tissues."),
+                         type = "warning", duration = 8)
+        return(NULL)
+      }
+      keep_feat <- apply(tmat, 2, function(v) isTRUE(var(v) > 0))
+      tmat <- tmat[, keep_feat, drop = FALSE]
+      if (!is.null(gbm_tmat_drug) && ncol(gbm_tmat_drug) == length(keep_feat)) gbm_tmat_drug <- gbm_tmat_drug[, keep_feat, drop = FALSE]
       setProgress(value = 0.3, detail = "Running embedding...")
       if (input$drug_reduction == "umap") {
         umap_drug_model <- umap(
@@ -6830,7 +7233,7 @@ server <- function(input, output, session) {
         gdsc_response_df
       drug_sub <- active_gdsc %>%
         filter(DRUG_NAME == input$drug_select) %>%
-        select(CellLine, LN_IC50, AUC, PUTATIVE_TARGET, PATHWAY_NAME) %>%
+        select(any_of(c("CellLine", "LN_IC50", "AUC", "MAX_CONC", "PUTATIVE_TARGET", "PATHWAY_NAME"))) %>%
         distinct(CellLine, .keep_all = TRUE)
       df <- embed_df %>%
         left_join(sample_info, by = "sample") %>%
@@ -6861,7 +7264,7 @@ server <- function(input, output, session) {
         drug_sub$PATHWAY_NAME[1]
       else
         "Unknown"
-      df$is_gbm <- df$Tissue %in% GBM_TISSUES
+      df$is_gbm <- df$Tissue %in% query_tissues()
       list(
         df = df,
         ax1 = ax1,
@@ -6920,7 +7323,7 @@ server <- function(input, output, session) {
               opacity = 0.4
             ),
             name = "No data",
-            text = ~ paste0("Cell Line: ", CellLine, "\nTissue: ", Tissue),
+            text = ~ paste0("Sample: ", CellLine, "\nTissue: ", Tissue),
             hoverinfo = "text"
           ) %>%
           add_trace(
@@ -6940,7 +7343,7 @@ server <- function(input, output, session) {
             ),
             showlegend = FALSE,
             text = ~ paste0(
-              "Cell Line: ",
+              "Sample: ",
               CellLine,
               "\nTissue: ",
               Tissue,
@@ -6978,7 +7381,7 @@ server <- function(input, output, session) {
           mode = "markers",
           marker = list(size = 4, opacity = 0.8),
           text = ~ paste0(
-            "Cell Line: ",
+            "Sample: ",
             CellLine,
             "\nTissue: ",
             Tissue,
@@ -7011,7 +7414,7 @@ server <- function(input, output, session) {
             opacity = 0.4
           ),
           name = "No data",
-          text = ~ paste0("Cell Line: ", CellLine, "\nTissue: ", Tissue),
+          text = ~ paste0("Sample: ", CellLine, "\nTissue: ", Tissue),
           hoverinfo = "text"
         ) %>%
         add_trace(
@@ -7034,7 +7437,7 @@ server <- function(input, output, session) {
           ),
           showlegend = FALSE,
           text = ~ paste0(
-            "Cell Line: ",
+            "Sample: ",
             CellLine,
             "\nTissue: ",
             Tissue,
@@ -7057,7 +7460,7 @@ server <- function(input, output, session) {
             size = input$drug_legend_size + 2,
             opacity = 0.95
           ),
-          name = "GBM Patient",
+          name = paste0(DATASETS$display_name[DATASETS$dataset_id == active_id()], " sample"),
           text = ~ paste0(
             "Patient: ",
             CellLine,
@@ -7098,7 +7501,7 @@ server <- function(input, output, session) {
                     color = sens_display,
                     shape = sens_display,
                     text = paste0(
-                      "Cell Line: ",
+                      "Sample: ",
                       CellLine,
                       "\nTissue: ",
                       Tissue,
@@ -7177,21 +7580,21 @@ server <- function(input, output, session) {
     else
       "sensitivity"
     df <- res$df %>% filter(!is.na(AUC)) %>%
-      mutate(Response = .data[[sens_col]]) %>%
-      select(CellLine, Tissue, AUC, LN_IC50, tissue_med_auc, Response) %>%
+      mutate(Response = .data[[sens_col]])
+    has_max <- "MAX_CONC" %in% names(df)
+    if (has_max)
+      df <- df %>% mutate(IC50_beyond = ifelse(LN_IC50 > log(MAX_CONC), "Yes", "No"))
+    df <- df %>%
+      select(any_of(c("CellLine", "Tissue", "AUC", "LN_IC50", "MAX_CONC", "IC50_beyond", "tissue_med_auc", "Response"))) %>%
       arrange(AUC)
+    nice <- c(CellLine = "Cell Line", Tissue = "Tissue", AUC = "AUC", LN_IC50 = "LN(IC50)",
+              MAX_CONC = "Max tested conc (uM)", IC50_beyond = "IC50 above max conc",
+              tissue_med_auc = "Tissue Median AUC", Response = "Response")
     datatable(
       df,
       options = list(pageLength = 20, scrollX = TRUE),
       rownames = FALSE,
-      colnames = c(
-        "Cell Line",
-        "Tissue",
-        "AUC",
-        "LN(IC50)",
-        "Tissue Median AUC",
-        "Response"
-      )
+      colnames = unname(nice[names(df)])
     ) %>%
       formatRound(columns = c("AUC", "LN_IC50", "tissue_med_auc"),
                   digits = 3) %>%
@@ -7311,15 +7714,15 @@ server <- function(input, output, session) {
       end = chr_lengths,
       stringsAsFactors = FALSE
     )
-    our_txids <- unique(tissue_avg_df$transcript_id)
+    our_txids <- unique(active_avg()$transcript_id)
     coords <- transcript_coords_df %>%
       filter(transcript_id %in% our_txids, chr %in% chr_names) %>%
-      left_join(tissue_avg_df %>% select(transcript_id, gene, all_of(tissue_col)), by = "transcript_id")
+      left_join(active_avg() %>% select(transcript_id, gene, all_of(tissue_col)), by = "transcript_id")
     coords$tpm <- coords[[tissue_col]]
     if (!is.null(input$circos_tissue_specific) &&
         input$circos_tissue_specific) {
-      tissue_cols_all <- intersect(names(tissue_avg_df), tissue_list)
-      spec_df <- tissue_avg_df %>%
+      tissue_cols_all <- intersect(names(active_avg()), active_tissues())
+      spec_df <- active_avg() %>%
         mutate(
           target = .data[[tissue_col]],
           total = rowSums(across(all_of(
@@ -7569,14 +7972,16 @@ server <- function(input, output, session) {
   )
   
   output$circos_chr_plot <- renderPlotly({
-    req(input$circos_chr_detail != "None")
+    validate(need(input$circos_chr_detail != "None",
+                  "Pick a chromosome under 'Chromosome Detail' in the sidebar to see this view."))
     tissue_col <- input$circos_tissue
     sel_chr <- input$circos_chr_detail
     window_bp <- input$circos_window_kb * 1000
-    our_txids <- unique(tissue_avg_df$transcript_id)
+    our_txids <- unique(active_avg()$transcript_id)
+    norm_chr <- function(x) ifelse(grepl("^chr", x), x, paste0("chr", x))
     coords <- transcript_coords_df %>%
-      filter(transcript_id %in% our_txids, chr == sel_chr) %>%
-      left_join(tissue_avg_df %>% select(transcript_id, gene, all_of(tissue_col)), by = "transcript_id")
+      filter(transcript_id %in% our_txids, norm_chr(chr) == sel_chr) %>%
+      left_join(active_avg() %>% select(transcript_id, gene, all_of(tissue_col)), by = "transcript_id")
     coords$tpm <- coords[[tissue_col]]
     coords$mid <- (coords$start + coords$end) / 2
     coords$bin_start <- floor(coords$mid / window_bp) * window_bp
@@ -7595,60 +8000,51 @@ server <- function(input, output, session) {
         pos_mb = round(bin_mid / 1e6, 2)
       )
     bin_data <- as.data.frame(bin_data)
-    if (nrow(bin_data) == 0)
-      return(NULL)
-    p <- ggplot(bin_data, aes(
-      x = pos_mb,
-      y = avg_tpm,
-      text = paste0(
-        sel_chr,
-        ": ",
-        format(bin_start, big.mark = ","),
-        "-",
-        format(bin_end, big.mark = ","),
-        "\nAvg TPM: ",
-        round(avg_tpm, 2),
-        "\nTranscripts: ",
-        n_tx,
-        "\nGenes: ",
-        top_genes
-      )
-    )) +
-      geom_col(fill = "#225ea8", width = window_bp / 1e6 * 0.9) +
-      labs(
-        title = paste0(sel_chr, " (", tissue_col, ")"),
-        x = "Position (Mb)",
-        y = "Avg TPM"
-      ) +
-      theme_minimal(base_size = 13) + theme(panel.grid.minor = element_blank())
-    sw <- tryCatch(
-      switch_results(),
-      error = function(e)
-        NULL
+    validate(need(nrow(bin_data) > 0,
+                  paste0("No expressed transcripts found on ", sel_chr, " for this tissue or group.")))
+    bin_data$avg_tpm[!is.finite(bin_data$avg_tpm)] <- 0
+    bin_data$hover <- paste0(
+      sel_chr, ": ", format(bin_data$bin_start, big.mark = ",", scientific = FALSE, trim = TRUE),
+      "-", format(bin_data$bin_end, big.mark = ",", scientific = FALSE, trim = TRUE),
+      "<br>Avg TPM: ", round(bin_data$avg_tpm, 2),
+      "<br>Transcripts: ", bin_data$n_tx,
+      "<br>Genes: ", bin_data$top_genes,
+      "<br>Isoforms: ", bin_data$top_isoforms
     )
-    if (!is.null(sw) &&
-        nrow(sw) > 0 && input$circos_show_switches) {
+    p <- plot_ly(
+      bin_data, x = ~pos_mb, y = ~avg_tpm, type = "bar",
+      width = window_bp / 1e6 * 0.9,
+      marker = list(color = "#225ea8"),
+      text = ~hover, hoverinfo = "text", textposition = "none",
+      name = "Avg TPM"
+    )
+    sw <- tryCatch(switch_results(), error = function(e) NULL)
+    if (!is.null(sw) && nrow(sw) > 0 && isTRUE(input$circos_show_switches)) {
       sw_coords <- coords %>%
         filter(gene %in% sw$gene) %>%
         group_by(gene) %>%
         summarise(mid = mean(mid), .groups = "drop") %>%
         inner_join(sw %>% select(gene, switch_score), by = "gene")
-      sw_coords$pos_mb <- sw_coords$mid / 1e6
-      if (nrow(sw_coords) > 0)
-        p <- p + geom_point(
-          data = as.data.frame(sw_coords),
-          aes(
-            x = pos_mb,
-            y = max(bin_data$avg_tpm) * 1.05,
-            size = switch_score,
-            text = paste0("Switch: ", gene, "\nScore: ", round(switch_score, 3))
-          ),
-          color = "#c51b8a",
-          alpha = 0.7
-        ) +
-        scale_size_continuous(range = c(2, 6), name = "Switch Score")
+      if (nrow(sw_coords) > 0) {
+        sw_coords <- as.data.frame(sw_coords)
+        sw_coords$pos_mb <- sw_coords$mid / 1e6
+        sw_coords$y <- max(bin_data$avg_tpm) * 1.05
+        p <- p %>% add_trace(
+          data = sw_coords, x = ~pos_mb, y = ~y, type = "scatter", mode = "markers",
+          marker = list(color = "#c51b8a", opacity = 0.7,
+                        size = 6 + 10 * sw_coords$switch_score / max(sw_coords$switch_score)),
+          text = ~paste0("Switch: ", gene, "<br>Score: ", round(switch_score, 3)),
+          hoverinfo = "text", name = "Switching genes", inherit = FALSE
+        )
+      }
     }
-    ggplotly(p, tooltip = "text")
+    p %>% layout(
+      title = list(text = paste0(sel_chr, " (", legend_label(tissue_col), ")")),
+      xaxis = list(title = "Position (Mb)"),
+      yaxis = list(title = "Avg TPM"),
+      bargap = 0.05,
+      showlegend = FALSE
+    )
   })
   
   # === Circos supplementary tables ===
@@ -7729,7 +8125,7 @@ server <- function(input, output, session) {
     tissue_col <- input$circos_tissue
     chr_order <- c(paste0("chr", 1:22), "chrX", "chrY")
     expr <- transcript_coords_df %>%
-      left_join(tissue_avg_df %>% select(transcript_id, all_of(tissue_col)), by = "transcript_id") %>%
+      left_join(active_avg() %>% select(transcript_id, all_of(tissue_col)), by = "transcript_id") %>%
       filter(chr %in% chr_order)
     expr$tpm <- expr[[tissue_col]]
     base <- expr %>%

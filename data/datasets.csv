@@ -1,0 +1,5 @@
+dataset_id,display_name,is_reference,samples_file,tpm_file,design_formula,quantifier,annotation,annotation_version,source_accession,remapped_from,mapping_rate
+ccle,CCLE cell lines,1,data/sample_metadata.csv,out/salmon_tpm_transcript_versioned.csv.gz,~ group_label,salmon,gencode,v49,DepMap,,
+hcc,Hepatocellular carcinoma,0,data/samples_hcc.csv,out/hcc/salmon_tpm_transcript.csv.gz,~ subject_id + group_label,salmon,gencode,v49,PRJNA1427671,,
+pca,Prostate adenocarcinoma,0,data/samples_pca.csv,out/pca/salmon_tpm_transcript.csv.gz,~ group_label,salmon,gencode,v49,PRJNA1497887,,
+gbm,Glioblastoma pre/post G207,0,data/samples_gbm.csv,out/gbm/salmon_tpm_transcript.csv.gz,~ subject_id + group_label,salmon,gencode,v49,PRJNA682450,,
