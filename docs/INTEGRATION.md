@@ -4,7 +4,7 @@ Each dataset in IsoScope is a folder in `shiny_data/` with its own database. The
 
 ### Step 1: Quantify the samples
 
-Quantify each sample with Salmon against GENCODE v49 basic transcripts, so transcript IDs match the CCLE reference. The Snakemake workflow used for the patient cohorts (STAR alignment, then Salmon in alignment-based mode) is in `scripts/snakemake_processing/`.
+Align reads to the GRCh38 genome and quantify each sample with Salmon against GENCODE v49 (https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/) basic transcripts, so transcript IDs match the CCLE reference. The Snakemake workflow used for the patient cohorts (STAR alignment, then Salmon in alignment-based mode) is in `scripts/snakemake_processing/`.
 
 ### Step 2: Describe the samples
 
