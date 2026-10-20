@@ -2,7 +2,7 @@
 
 *Interactive visualization of transcript isoform expression across cancer cell lines and patient cohorts*
 
-**[Live app](https://huggingface.co/spaces/HorvathLab/IsoScope)** · **[Data (Zenodo)] (To be added)** · **[Source code](https://github.com/HorvathLab/IsoScope)** · Version 2.0
+**[Live app](https://huggingface.co/spaces/HorvathLab/IsoScope)** · **[Data (Zenodo)] (https://zenodo.org/records/23510703)** · **[Source code](https://github.com/HorvathLab/IsoScope)** · Version 2.0
 
 ## Overview
 
@@ -141,7 +141,7 @@ git clone https://github.com/HorvathLab/IsoScope.git
 cd IsoScope
 ```
 
-Download the data from Zenodo (Zenodo link to be added) and place it in `shiny_data/` next to `app.R`, keeping one folder per dataset:
+Download the data from Zenodo (https://zenodo.org/records/23510703) and place it in `shiny_data/` next to `app.R`, keeping one folder per dataset:
 
 ```
 shiny_data/
