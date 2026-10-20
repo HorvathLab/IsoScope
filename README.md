@@ -2,7 +2,7 @@
 
 *Interactive visualization of transcript isoform expression across cancer cell lines and patient cohorts*
 
-**[Live app](https://huggingface.co/spaces/HorvathLab/IsoScope)** · **[Data (Zenodo)] (https://zenodo.org/records/23510703)** · **[Source code](https://github.com/HorvathLab/IsoScope)** · Version 2.0
+**[Live app](https://huggingface.co/spaces/HorvathLab/IsoScope)** · **[Data (Zenodo)](https://zenodo.org/records/23510703)** · **[Source code](https://github.com/HorvathLab/IsoScope)** · Version 2.0
 
 ## Overview
 
