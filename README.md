@@ -154,7 +154,7 @@ shiny_data/
   transcript_exons.csv.gz
 ```
 
-Then:
+Then in R or Rstudio:
 
 ```r
 shiny::runApp()
