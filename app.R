@@ -465,6 +465,10 @@ if (!is.null(QUERY_GROUPS) && nrow(QUERY_GROUPS) > 0) {
   TISSUE_COLORS <- c(TISSUE_COLORS, setNames(q_pal, QUERY_GROUPS$pretty))
 }
 
+expr_ok <- function(a, b, thr, rule) {
+  if (identical(rule, "either")) pmax(a, b) >= thr else pmin(a, b) >= thr
+}
+
 CCLE_SAMPLES <- sample_meta_df$subject_id
 GBM_SAMPLES  <- character(0)
 
@@ -774,9 +778,16 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
       ),
       uiOutput("switch_cl_tissues")
     ),
+    radioButtons(
+      "switch_expr_rule",
+      "TPM threshold must be met by:",
+      choices = c("Both groups" = "both", "Either group" = "either"),
+      selected = "both",
+      inline = TRUE
+    ),
     sliderInput(
       "min_expr",
-      "Min avg TPM (either group):",
+      "Min avg TPM:",
       min = 0,
       max = 50,
       value = 1,
@@ -800,7 +811,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
           "High only" = "high",
           "High + Medium" = "high_med"
         ),
-        selected = "all"
+        selected = "high_med"
       )
     ),
     if (HAS_TX_ANNOT)
@@ -838,7 +849,10 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         "= number of samples in that group.",
         br(),
         tags$b("Switch score"),
-        "= absolute difference in dominant isoform proportion between groups.",
+        "= |p1 - p2|, where p1 and p2 are the proportions of each group's own dominant isoform.",
+        "Because the two dominant isoforms are different transcripts, the score reflects how concentrated",
+        "expression is in each group rather than the change in a single isoform; a balanced shift",
+        "(for example 60/40 to 40/60) scores close to 0.",
         br(),
         tags$b("Confidence"),
         "= based on bootstrap resampling (1000 iterations).",
@@ -864,7 +878,7 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         "= proportion of total gene TPM from the dominant isoform.",
         br(),
         tags$b("Switch score"),
-        "= absolute difference in proportions.",
+        "= |p1 - p2|, the difference between each sample's own dominant-isoform proportion.",
         br(),
         "No confidence intervals (single sample per group).",
         br(),
@@ -1446,9 +1460,16 @@ tab_de <- tabPanel("Differential Expression",
                        ),
                        conditionalPanel(
                          condition = "input.de_method == 'wilcoxon'",
+                         radioButtons(
+                           "de_expr_rule",
+                           "TPM threshold must be met by:",
+                           choices = c("Both groups" = "both", "Either group" = "either"),
+                           selected = "both",
+                           inline = TRUE
+                         ),
                          sliderInput(
                            "de_min_tpm",
-                           "Min mean TPM (either group):",
+                           "Min mean TPM:",
                            min = 0,
                            max = 20,
                            value = 1,
@@ -1528,7 +1549,7 @@ tab_de <- tabPanel("Differential Expression",
                          br(),
                          tags$b("Glioblastoma:"), "Post vs Pre G207, paired by patient (3 patients). Pre and post",
                          "samples differ in library preparation and sequencing platform, so differences",
-                         "partly reflect technical effects.",
+                         "are confounded with these technical effects; treat results as exploratory only.",
                          br(),
                          br(),
                          tags$b("Sample vs Sample:"),
@@ -1540,6 +1561,7 @@ tab_de <- tabPanel("Differential Expression",
                      mainPanel(
                        width = 9,
                        h4("Results"),
+                       uiOutput("gbm_banner_de"),
                        uiOutput("de_method_info"),
                        plotlyOutput("de_plot", height = "500px"),
                        hr(),
@@ -1637,6 +1659,7 @@ tab_kegg <- tabPanel("Pathway Enrichment",
                        ),
                        mainPanel(
                          width = 9,
+                         uiOutput("gbm_banner_kegg"),
                          uiOutput("kegg_source_info"),
                          hr(),
                          h4(textOutput("kegg_up_label")),
@@ -1939,11 +1962,14 @@ tab_about <- tabPanel("About", fluidRow(
         style = "color: #225ea8;"
       ),
       ". Raw reads were aligned to GRCh38/hg38 using STAR 2.7.2a with GENCODE v49.",
-      "Transcript-level expression quantified using Salmon 1.10.0.",
-      "Patient cohorts (glioblastoma, hepatocellular carcinoma, prostate adenocarcinoma) were requantified",
-      "from raw reads with the same reference and pipeline.",
+      "Transcript-level expression was quantified with Salmon 1.10.0 in alignment-based mode against",
+      "GENCODE v49 basic transcripts. CCLE comprises 668 samples from 667 cell lines (the TT cell line",
+      "is represented by separate oesophagus and thyroid samples).",
+      "Patient cohorts (glioblastoma, hepatocellular carcinoma, prostate adenocarcinoma) were processed",
+      "from raw reads with STAR alignment and Salmon quantification against the same reference.",
       "Gene-level values were summarised with tximport (lengthScaledTPM), and differential expression",
-      "was computed with DESeq2 1.52.0 separately within each dataset.",
+      "was computed with DESeq2 1.52.0 separately within each dataset. These results were precomputed",
+      "in R 4.6; the hosted application itself runs the R version shown at the bottom of this page.",
       "Drug response data (AUC, IC50) from GDSC1 and GDSC2 via",
       tags$a(
         href = "https://cellmodelpassports.sanger.ac.uk/downloads",
@@ -1952,6 +1978,14 @@ tab_about <- tabPanel("About", fluidRow(
         style = "color: #225ea8;"
       ),
       "."
+    ),
+    p(
+      tags$b("Patient cohort notes."),
+      "Hepatocellular carcinoma: DESeq2 uses the 6 patients with paired tumor and adjacent samples;",
+      "one adjacent sample flagged as an outlier in the source metadata is excluded.",
+      "Glioblastoma: pre- and post-G207 samples differ in library preparation, read length and",
+      "sequencing platform, so differences between them are confounded with these technical effects",
+      "and should be treated as exploratory only."
     ),
     p(
       "Transcript annotations (biotype, exon count, transcript length) from GENCODE v49 GTF.",
@@ -1973,6 +2007,46 @@ tab_about <- tabPanel("About", fluidRow(
           "Systematic identification of genomic markers of drug sensitivity in cancer cells."
         ),
         "Nature, 483, 570\u2013575, 2012."
+      ),
+      tags$li(
+        "Yang, W. et al.",
+        tags$i("Genomics of Drug Sensitivity in Cancer (GDSC): a resource for therapeutic biomarker discovery in cancer cells."),
+        "Nucleic Acids Research, 41, D955\u2013D961, 2013."
+      ),
+      tags$li(
+        "Iorio, F. et al.",
+        tags$i("A landscape of pharmacogenomic interactions in cancer."),
+        "Cell, 166, 740\u2013754, 2016."
+      ),
+      tags$li(
+        "van der Meer, D. et al.",
+        tags$i("Cell Model Passports: a hub for clinical, genetic and functional datasets of preclinical cancer models."),
+        "Nucleic Acids Research, 47, D923\u2013D929, 2019."
+      ),
+      tags$li(
+        "Dobin, A. et al.",
+        tags$i("STAR: ultrafast universal RNA-seq aligner."),
+        "Bioinformatics, 29, 15\u201321, 2013."
+      ),
+      tags$li(
+        "Frankish, A. et al.",
+        tags$i("GENCODE 2021."),
+        "Nucleic Acids Research, 49, D916\u2013D923, 2021."
+      ),
+      tags$li(
+        "McInnes, L., Healy, J., Melville, J.",
+        tags$i("UMAP: Uniform Manifold Approximation and Projection for dimension reduction."),
+        "arXiv:1802.03426, 2018."
+      ),
+      tags$li(
+        "Kanehisa, M., Goto, S.",
+        tags$i("KEGG: Kyoto Encyclopedia of Genes and Genomes."),
+        "Nucleic Acids Research, 28, 27\u201330, 2000."
+      ),
+      tags$li(
+        "Yu, G., Wang, L.-G., Han, Y., He, Q.-Y.",
+        tags$i("clusterProfiler: an R package for comparing biological themes among gene clusters."),
+        "OMICS, 16, 284\u2013287, 2012."
       ),
       tags$li(
         "Patro, R., Duggal, G., Love, M.I., Irizarry, R.A., Kingsford, C.",
@@ -2028,10 +2102,10 @@ tab_about <- tabPanel("About", fluidRow(
       tags$li(
         "Patient cohorts: hepatocellular carcinoma, SRA BioProject",
         tags$a(href = "https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1427671", target = "_blank",
-               "PRJNA1427671", style = "color: #225ea8;"),
+               "PRJNA1427671", style = "color: #225ea8;", .noWS = "after"),
         "; prostate adenocarcinoma, SRA BioProject",
         tags$a(href = "https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1497887", target = "_blank",
-               "PRJNA1497887", style = "color: #225ea8;"),
+               "PRJNA1497887", style = "color: #225ea8;", .noWS = "after"),
         "."
       )
     ),
@@ -2319,6 +2393,17 @@ server <- function(input, output, session) {
     if (is.null(input$dataset_mode)) REF_ID else input$dataset_mode
   })
 
+  gbm_banner <- function() renderUI({
+    if (!identical(active_id(), "gbm")) return(NULL)
+    div(style = "background: #fdf1e7; border-left: 4px solid #D85A30; padding: 10px 14px; margin-bottom: 12px; font-size: 14px;",
+        tags$b("Glioblastoma: "),
+        "pre- and post-G207 samples differ in library preparation (total RNA vs poly(A)), read length and",
+        "sequencing platform. Differences between these groups are confounded with these technical effects",
+        "and should be treated as exploratory only.")
+  })
+  output$gbm_banner_de <- gbm_banner()
+  output$gbm_banner_kegg <- gbm_banner()
+
   query_samples <- reactive({
     id <- active_id()
     if (id == REF_ID) return(NULL)
@@ -2370,6 +2455,9 @@ server <- function(input, output, session) {
     am <- active_meta()
     tc <- as.integer(table(am$Tissue)[at])
     ds <- am$dataset[match(at, am$Tissue)]
+    is_q <- !(at %in% CCLE_TISSUES)
+    o <- order(!is_q, -tc)
+    at <- at[o]; tc <- tc[o]; ds <- ds[o]
     new_choices <- setNames(at, paste0(at, " (n=", tc, ")"))
     for (id in c(
       "tissue_filter",
@@ -2895,9 +2983,14 @@ server <- function(input, output, session) {
           ci_hi2 = ci_upper,
           n2 = n_samples
         )
+      n_small <- min(c(d1$n1, d2$n2, Inf), na.rm = TRUE)
+      if (is.finite(n_small) && n_small < 3)
+        showNotification(
+          "One of the selected groups has fewer than 3 samples, so every switch in this comparison is Low confidence.",
+          type = "warning", duration = 8)
       result <- inner_join(d1, d2, by = "gene") %>%
         filter(dominant_tx1 != dominant_tx2,
-               pmax(tpm1, tpm2) >= input$min_expr) %>%
+               expr_ok(tpm1, tpm2, input$min_expr, input$switch_expr_rule)) %>%
         mutate(
           switch_score = abs(prop1 - prop2),
           ci_overlap = !is.na(ci_lo1) &
@@ -2938,7 +3031,7 @@ server <- function(input, output, session) {
           .groups = "drop"
         ) %>%
         filter(dominant_tx1 != dominant_tx2,
-               pmax(tpm1, tpm2) >= input$min_expr) %>%
+               expr_ok(tpm1, tpm2, input$min_expr, input$switch_expr_rule)) %>%
         mutate(
           switch_score = abs(prop1 - prop2),
           confidence = "N/A",
@@ -6356,7 +6449,7 @@ server <- function(input, output, session) {
         mat2 <- as.matrix(full_df[, cols2, drop = FALSE])
         mean1 <- rowMeans(mat1, na.rm = TRUE)
         mean2 <- rowMeans(mat2, na.rm = TRUE)
-        keep <- pmax(mean1, mean2) >= input$de_min_tpm
+        keep <- expr_ok(mean1, mean2, input$de_min_tpm, input$de_expr_rule)
         full_df <- full_df[keep, ]
         mat1 <- mat1[keep, , drop = FALSE]
         mat2 <- mat2[keep, , drop = FALSE]
@@ -6398,7 +6491,7 @@ server <- function(input, output, session) {
         all_df <- fetch_quant_cols(c(cl1_label, cl2_label))
         names(all_df)[3:4] <- c("tpm_1", "tpm_2")
         all_df <- all_df %>%
-          filter(pmax(tpm_1, tpm_2) >= input$de_min_tpm) %>%
+          filter(expr_ok(tpm_1, tpm_2, input$de_min_tpm, input$de_expr_rule)) %>%
           mutate(log2FC = log2((tpm_1 + 1) / (tpm_2 + 1))) %>%
           arrange(desc(abs(log2FC)))
         names(all_df)[names(all_df) == "tpm_1"] <- paste0("TPM_", input$de_cl1)
@@ -7580,7 +7673,9 @@ server <- function(input, output, session) {
     else
       "sensitivity"
     df <- res$df %>% filter(!is.na(AUC)) %>%
-      mutate(Response = .data[[sens_col]])
+      mutate(Response = dplyr::recode(.data[[sens_col]],
+                                      Sensitive = "Below median AUC",
+                                      Resistant = "Above median AUC"))
     has_max <- "MAX_CONC" %in% names(df)
     if (has_max)
       df <- df %>% mutate(IC50_beyond = ifelse(LN_IC50 > log(MAX_CONC), "Yes", "No"))
@@ -7589,7 +7684,7 @@ server <- function(input, output, session) {
       arrange(AUC)
     nice <- c(CellLine = "Cell Line", Tissue = "Tissue", AUC = "AUC", LN_IC50 = "LN(IC50)",
               MAX_CONC = "Max tested conc (uM)", IC50_beyond = "IC50 above max conc",
-              tissue_med_auc = "Tissue Median AUC", Response = "Response")
+              tissue_med_auc = "Tissue Median AUC", Response = "Relative response")
     datatable(
       df,
       options = list(pageLength = 20, scrollX = TRUE),
@@ -7598,7 +7693,7 @@ server <- function(input, output, session) {
     ) %>%
       formatRound(columns = c("AUC", "LN_IC50", "tissue_med_auc"),
                   digits = 3) %>%
-      formatStyle("Response", backgroundColor = styleEqual(c("Sensitive", "Resistant"), c("#dce8f5", "#f0e0e0")))
+      formatStyle("Response", backgroundColor = styleEqual(c("Below median AUC", "Above median AUC"), c("#dce8f5", "#f0e0e0")))
   })
   
   output$dl_drug_plot <- downloadHandler(
