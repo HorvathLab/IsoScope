@@ -157,8 +157,11 @@ shiny_data/
 Then in R or Rstudio:
 
 ```r
+install.packages("renv")
+renv::restore()
 shiny::runApp()
 ```
+`renv::restore()` installs the package versions recorded in `renv.lock`; it only needs to be run once.
 
 </details>
 
