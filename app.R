@@ -857,9 +857,9 @@ tab_switching <- tabPanel("Isoform Switching", sidebarLayout(
         tags$b("Confidence"),
         "= based on bootstrap resampling (1000 iterations).",
         br(),
-        "High = non-overlapping 95% CIs, both groups n >= 3.",
+        "High = in each group, the lower 95% CI bound of that group's dominant isoform exceeds that group's proportion of the other group's dominant isoform (both groups n >= 3).",
         br(),
-        "Medium = CIs overlap but dominant isoform still differs.",
+        "Medium = the dominant isoform differs, but this holds in only one group or neither.",
         br(),
         "Low = fewer than 3 samples in a group.",
         br(),
@@ -2988,18 +2988,24 @@ server <- function(input, output, session) {
         showNotification(
           "One of the selected groups has fewer than 3 samples, so every switch in this comparison is Low confidence.",
           type = "warning", duration = 8)
+      av <- tissue_avg_df[, c("transcript_id", t1, t2)]
+      names(av) <- c("transcript_id", "avg_g1", "avg_g2")
       result <- inner_join(d1, d2, by = "gene") %>%
         filter(dominant_tx1 != dominant_tx2,
                expr_ok(tpm1, tpm2, input$min_expr, input$switch_expr_rule)) %>%
+        left_join(av %>% select(transcript_id, tx2_avg_g1 = avg_g1),
+                  by = c("dominant_tx2" = "transcript_id")) %>%
+        left_join(av %>% select(transcript_id, tx1_avg_g2 = avg_g2),
+                  by = c("dominant_tx1" = "transcript_id")) %>%
         mutate(
           switch_score = abs(prop1 - prop2),
-          ci_overlap = !is.na(ci_lo1) &
-            !is.na(ci_lo2) & ci_lo1 <= ci_hi2 & ci_lo2 <= ci_hi1,
+          other_prop1 = ifelse(tpm1 > 0, coalesce(tx2_avg_g1, 0) / tpm1, 0),
+          other_prop2 = ifelse(tpm2 > 0, coalesce(tx1_avg_g2, 0) / tpm2, 0),
           confidence = case_when(
             pmin(n1, n2) < 3 ~ "Low",
             is.na(ci_lo1) | is.na(ci_lo2) ~ "Low",
-            ci_overlap ~ "Medium",
-            TRUE ~ "High"
+            ci_lo1 > other_prop1 & ci_lo2 > other_prop2 ~ "High",
+            TRUE ~ "Medium"
           ),
           dominant_iso_group1 = paste0(gene, " | ", dominant_tx1),
           dominant_iso_group2 = paste0(gene, " | ", dominant_tx2)
@@ -5082,8 +5088,16 @@ server <- function(input, output, session) {
       ),
     content = function(file) {
       df <- specific_results()
-      if (!is.null(df))
-        write.csv(df, file, row.names = FALSE)
+      if (is.null(df))
+        return()
+      df <- df %>%
+        select(gene, transcript_id, target_tpm, total_tpm, specificity) %>%
+        join_annotations()
+      if (HAS_TX_ANNOT &&
+          !is.null(input$spec_biotype_filter) &&
+          input$spec_biotype_filter != "All")
+        df <- df %>% filter(Biotype == input$spec_biotype_filter)
+      write.csv(df, file, row.names = FALSE)
     }
   )
   
@@ -6308,12 +6322,17 @@ server <- function(input, output, session) {
       if (is.null(res))
         return()
       cor_df <- as.data.frame(as.table(res$cor_mat))
-      names(cor_df) <- c("S1", "S2", "Correlation")
-      write.csv(
-        cor_df %>% filter(as.character(S1) < as.character(S2)) %>% arrange(Correlation),
-        file,
-        row.names = FALSE
-      )
+      names(cor_df) <- c("Sample1", "Sample2", "Correlation")
+      cor_df <- cor_df %>%
+        filter(as.character(Sample1) < as.character(Sample2)) %>%
+        arrange(Correlation)
+      if (res$mode == "cellline" && !is.null(res$tissues)) {
+        tissue_lookup <- setNames(res$tissues, res$labels)
+        cor_df <- cor_df %>%
+          mutate(Tissue1 = tissue_lookup[as.character(Sample1)], Tissue2 = tissue_lookup[as.character(Sample2)]) %>%
+          select(Sample1, Tissue1, Sample2, Tissue2, Correlation)
+      }
+      write.csv(cor_df, file, row.names = FALSE)
     }
   )
   
@@ -7753,17 +7772,17 @@ server <- function(input, output, session) {
       res <- drug_data()
       if (is.null(res))
         return()
+      df <- res$df %>% filter(!is.na(AUC)) %>%
+        mutate(
+          response_tissue = dplyr::recode(sensitivity, Sensitive = "Below median AUC", Resistant = "Above median AUC"),
+          response_global = dplyr::recode(sensitivity_global, Sensitive = "Below median AUC", Resistant = "Above median AUC")
+        )
+      if ("MAX_CONC" %in% names(df))
+        df <- df %>% mutate(IC50_above_max_conc = ifelse(LN_IC50 > log(MAX_CONC), "Yes", "No"))
       write.csv(
-        res$df %>% filter(!is.na(AUC)) %>%
-          select(
-            CellLine,
-            Tissue,
-            AUC,
-            LN_IC50,
-            tissue_med_auc,
-            sensitivity,
-            sensitivity_global
-          ) %>%
+        df %>%
+          select(any_of(c("CellLine", "Tissue", "AUC", "LN_IC50", "MAX_CONC", "IC50_above_max_conc",
+                          "tissue_med_auc", "response_tissue", "response_global"))) %>%
           arrange(AUC),
         file,
         row.names = FALSE
