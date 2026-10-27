@@ -1961,7 +1961,7 @@ tab_about <- tabPanel("About", fluidRow(
         "PRJNA523380",
         style = "color: #225ea8;"
       ),
-      ". Raw reads were aligned to GRCh38/hg38 using STAR 2.7.2a with GENCODE v49.",
+      ". Raw reads were aligned to GRCh38/hg38 using STAR 2.7.11b with GENCODE v49.",
       "Transcript-level expression was quantified with Salmon 1.10.0 in alignment-based mode against",
       "GENCODE v49 basic transcripts. CCLE comprises 668 samples from 667 cell lines (the TT cell line",
       "is represented by separate oesophagus and thyroid samples).",
