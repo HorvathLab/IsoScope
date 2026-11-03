@@ -86,7 +86,7 @@ HNF4A, the master transcription factor of the liver, is transcribed from two pro
 
 **Reference: CCLE**
 
-- RNA-seq: 668 samples from 667 cell lines, 26 tissues (BioProject [PRJNA523380](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA523380); Ghandi et al., 2019). [DepMap release for cell line annotations: TO CONFIRM]
+- RNA-seq: 668 samples from 667 cell lines, 26 tissues (BioProject [PRJNA523380](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA523380); Ghandi et al., 2019). [DepMap release for cell line annotations: DepMap CCLE 2019; Cell_lines_annotations_20181226]
 - Alignment: STAR 2.7.11b, GRCh38, GENCODE v49 basic annotation
 - Drug response: GDSC1 (378 drugs) and GDSC2 (286 drugs) via [Cell Model Passports](https://cellmodelpassports.sanger.ac.uk/downloads)
 
